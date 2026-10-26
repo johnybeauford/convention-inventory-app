@@ -1,118 +1,128 @@
 # Convention Inventory App
 
-A standalone, mobile-friendly inventory tracker for convention/assembly
-equipment. Scan a QR code (or type a name) to check items in and out,
-everyone using the app sees live updates, and an Admin tab lets you add,
-edit, or delete catalog items — including uploading your own photos.
+A mobile-friendly app for requesting, checking out and returning circuit
+assembly and convention equipment.
 
-This app is **not** a Claude artifact — it's a normal web app you host
-yourself (free, on Vercel) with a free Firebase backend for the shared
-data.
+**Live site:** https://convention-inventory-app.vercel.app
 
 ---
 
-## 1. Create your Firebase project (5 minutes, free)
+## What the app does
 
-1. Go to [console.firebase.google.com](https://console.firebase.google.com) and click **Add project**. Name it anything (e.g. "convention-inventory") and finish the wizard — you can decline Google Analytics.
-2. In the left sidebar, click **Build → Firestore Database → Create database**. Choose **Start in test mode** (open reads/writes — fine for a small trusted group of volunteers; see the security note at the bottom to lock it down later). Pick any region close to you.
-3. Click the gear icon → **Project settings**. Under "Your apps," click the **</> (Web)** icon to register a new web app. Give it any nickname. You don't need Firebase Hosting.
-4. Firebase will show you a `firebaseConfig` object with keys like `apiKey`, `authDomain`, etc. Keep this tab open — you'll need it in step 3 below.
+**For requesters (no login needed)**
+- Fill in request details (name, phone, event, circuit, dates).
+- Browse or search the catalog by category and pick items.
+- Submit the request and get a confirmation email.
+- Check on an existing order with "Already started or submitted an order?"
 
-## 2. Get the code running locally
+**For volunteers (Admin tab, login required)**
 
-You'll need [Node.js](https://nodejs.org) installed (v18+).
+Volunteers sign in with a password plus a 6-digit code emailed to them.
+Each volunteer only sees the sections their permissions allow:
+
+| Section | What it's for |
+|---|---|
+| Catalog | Add, edit or delete items and their photos |
+| Orders | Review new requests and assign who fills them |
+| Returns | Check returned items back in |
+| Break/Fix & Projects | Track broken, missing or to-do items and assign them |
+| History | Past orders |
+| QR Codes | Print QR labels for items |
+| Print Lists | Printable lists to use if the app is unavailable |
+| Volunteers | Add volunteers and set their permissions |
+
+**Automatic emails**, sent at each step: request submitted, needs review,
+assigned to fill, ready for pickup, returned, Break/Fix assignment, login
+codes and password resets.
+
+---
+
+## The accounts behind the app
+
+The app depends on four separate services. **Each one has its own owner
+and login.** Moving the GitHub project to a new owner does **not** move the
+others, so each needs to be shared or transferred on its own.
+
+| Service | What it does | Name in that service |
+|---|---|---|
+| **GitHub** | Stores the code | `johnybeauford/convention-inventory-app` |
+| **Firebase** (Google) | Stores all data: items, orders, volunteers, Break/Fix | project `jw-inventory-mgr` |
+| **Vercel** | Runs the website and the email/password functions | `convention-inventory-app` |
+| **Resend** | Sends the emails, from `alerts@notify.jw-inventory.com` | domain `notify.jw-inventory.com` |
+
+The domain `jw-inventory.com` is also registered somewhere (a domain
+registrar) and must be renewed to keep emails working.
+
+**To give someone access:**
+- **Firebase:** console.firebase.google.com → project → gear icon →
+  *Users and permissions* → *Add member* → role **Owner**. Only someone
+  who already has access can do this.
+- **Vercel:** project → *Settings* → *Members*, or transfer the project.
+- **Resend:** *Settings* → *Team* → invite.
+
+---
+
+## How changes go live
+
+Saving a change to the `main` branch on GitHub automatically updates the
+live website within a few minutes (through Vercel). **There is no
+separate "publish" step**, so test changes before saving them to `main`.
+
+**Changes to data are different:** anything added, edited or deleted in
+the app (including a copy running on your own computer) changes the real
+shared data immediately.
+
+---
+
+## Settings ("environment variables")
+
+**In Vercel** (*Settings → Environment Variables*):
+
+| Name | Where to get it |
+|---|---|
+| `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID`, `VITE_FIREBASE_APP_ID` | Firebase → Project settings → *Your apps*. These are also visible in the live website's code, so they aren't secret. |
+| `RESEND_API_KEY` | Resend → *API Keys*. **This one is secret.** |
+
+**On your own computer:** copy `.env.example` to `.env` and fill in the six
+`VITE_FIREBASE_*` values. `.env` is never uploaded to GitHub. Emails won't
+send when running locally.
+
+---
+
+## Running it on your own computer
+
+You need [Node.js](https://nodejs.org) (version 18 or newer).
 
 ```bash
-cd convention-inventory-app
 npm install
-cp .env.example .env
-```
-
-Open `.env` in a text editor and paste in the values from your Firebase
-config (step 4 above):
-
-```
-VITE_FIREBASE_API_KEY=AIza...
-VITE_FIREBASE_AUTH_DOMAIN=convention-inventory-xxxx.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=convention-inventory-xxxx
-VITE_FIREBASE_STORAGE_BUCKET=convention-inventory-xxxx.appspot.com
-VITE_FIREBASE_MESSAGING_SENDER_ID=123456789
-VITE_FIREBASE_APP_ID=1:123456789:web:abcdef
-```
-
-Then run:
-
-```bash
 npm run dev
 ```
 
-Open the printed `localhost` URL. Go to the **Admin** tab and click
-**Load Starter Inventory** to seed all 73 items from the original
-Spanish Regional Convention inventory sheet (with their photos). From
-then on, use **Add Item** / **Edit** / **Delete** on that same tab to
-manage the catalog — no code editing required.
+Then open the `localhost` address it prints. Remember: this uses the real
+shared data.
 
-## 3. Deploy it so anyone can use it (Vercel, free)
+---
 
-1. Push this folder to a GitHub repo (or use `npx vercel` directly from
-   the folder without GitHub — either works).
-2. Go to [vercel.com](https://vercel.com), sign in, and **Add New →
-   Project**, importing this repo (or run `npx vercel` from inside the
-   folder and follow the prompts).
-3. Vercel auto-detects the Vite framework. Before deploying, add the
-   same six `VITE_FIREBASE_*` environment variables from your `.env`
-   file under **Settings → Environment Variables**.
-4. Deploy. You'll get a URL like `convention-inventory.vercel.app` —
-   share that with your volunteers.
-5. On an iPhone: open the link in Safari → Share → **Add to Home
-   Screen**. On Android: open in Chrome → menu → **Add to Home screen**.
+## Security to-do
 
-Every volunteer who opens that link sees the same live inventory —
-no Claude account needed.
+The original setup put the Firebase database in **test mode**, which lets
+anyone who knows the project name read or change the data. Someone with
+Firebase access should check *Firestore Database → Rules* and tighten
+them, or confirm they already have been.
 
-## What's different from the Claude-artifact version
+---
 
-| | Claude artifact version | This standalone version |
-|---|---|---|
-| Shared data | `window.storage` (only works inside a shared Claude link) | Firebase Firestore (real-time, works anywhere) |
-| Catalog editing | Fixed at build time | Add/Edit/Delete items from the **Admin** tab, with photo upload |
-| QR scanning | Paste-box demo only | Real camera scanning (`html5-qrcode`), with a manual-entry fallback for devices without a camera |
-| Request details | Not persisted between sessions | Saved on-device (`localStorage`) so it's remembered next visit |
-| Hosting | Only inside claude.ai | Any static host (Vercel, Netlify, your own server) |
-
-## What's still a mock (intentionally, to keep this simple)
-
-- **Submit & Notify** shows a summary and a success screen but doesn't
-  send a real email yet. To wire it up, add a call to SendGrid, Resend,
-  or a Zapier/Make webhook inside `src/components/SubmitModal.jsx`'s
-  `onSubmit` handler.
-
-## Project structure
+## Where things are in the code
 
 ```
+api/                  Server functions run by Vercel
+  notify-*.js           Each sends one kind of email via Resend
+  hash-password.js      Stores volunteer passwords safely
+  verify-password.js    Checks a volunteer's password at login
 src/
-  App.jsx                  – top-level layout, tabs, state wiring
-  firebase.js               – Firebase init (reads .env)
-  useInventory.js            – Firestore real-time sync + CRUD hook
-  seedData.js                – the 73 starter items (name/category/qty/photo)
-  imageUtils.js               – resizes uploaded photos before saving
-  styles.js                    – shared style tokens (colors, layout)
-  components/
-    ItemCard.jsx, RequesterForm.jsx, ScanModal.jsx, QrModal.jsx,
-    QRBox.jsx, SubmitModal.jsx, NotesSection.jsx, AdminPage.jsx,
-    Modal.jsx, Icon.jsx
+  App.jsx               Main screen, tabs and request flow
+  useInventory.js       Reads and saves data in Firebase
+  firebase.js           Connects to Firebase using the .env values
+  seedData.js           The original 73 starter items, with photos
+  components/           Each screen and pop-up (AdminHub.jsx = Admin tab)
 ```
-
-## Locking down Firestore security later
-
-Test mode leaves the database open to anyone with your project ID, which
-is fine for a small volunteer group but worth tightening if you want more
-control. Two easy options:
-
-- **Simplest:** in Firestore rules, restrict writes to a shared "admin
-  passcode" check, or set an expiry date on the test-mode rules (Firebase
-  prompts you before they expire).
-- **More robust:** add Firebase Authentication (e.g. anonymous or email
-  sign-in) and update the Firestore rules to require `request.auth != null`.
-  This is a larger change — ask if you'd like help adding it.
-  
