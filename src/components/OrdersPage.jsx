@@ -23,6 +23,7 @@ export function OrdersPage({
   onResendReadyEmail,
   onResendSubmittedEmail,
   onCancelOrder,
+  onMoveBackToPicking,
   onCancelDraft,
   onUpdateDraftItems,
   onUpdateOrderItems,
@@ -127,6 +128,7 @@ export function OrdersPage({
           onResendReadyEmail={onResendReadyEmail}
           onResendSubmittedEmail={onResendSubmittedEmail}
           onCancelOrder={onCancelOrder}
+          onMoveBackToPicking={onMoveBackToPicking}
           onUpdateOrder={onUpdateOrder}
           onEditOrder={() => setEditingOrder(order)}
           volunteers={volunteers}
@@ -194,7 +196,7 @@ export function OrdersPage({
   );
 }
 
-function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVolunteerName, canCancel, onMarkReady, onAssignFillers, onResendFillerNotice, onResendReadyEmail, onResendSubmittedEmail, onCancelOrder, onUpdateOrder, onEditOrder }) {
+function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVolunteerName, canCancel, onMarkReady, onAssignFillers, onResendFillerNotice, onResendReadyEmail, onResendSubmittedEmail, onCancelOrder, onMoveBackToPicking, onUpdateOrder, onEditOrder }) {
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [resendingReady, setResendingReady] = useState(false);
@@ -239,6 +241,18 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
   const reviewedBy = order.reviewedBy || [];
   const alreadyReviewedByMe = reviewedBy.includes(currentVolunteerName);
   const reviewsStillNeeded = Math.max(REQUIRED_REVIEWS - reviewedBy.length, 0);
+
+  const [movingBack, setMovingBack] = useState(false);
+  async function handleMoveBack() {
+    setMovingBack(true);
+    try {
+      await onMoveBackToPicking(order);
+    } finally {
+      setMovingBack(false);
+    }
+  }
+  // Until it's been gathered and the requester told it's ready.
+  const canMoveBack = ["submitted", "reviewed", "assigned"].includes(order.status);
 
   async function handleCancel() {
     setCancelling(true);
@@ -622,9 +636,16 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
           </button>
         </div>
         {canCancel ? (
-          <button style={cancelLinkStyle} disabled={cancelling} onClick={handleCancel}>
-            {cancelling ? "Cancelling…" : "Cancel & Archive Order"}
-          </button>
+          <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+            {canMoveBack && (
+              <button style={editLinkStyle} disabled={movingBack} onClick={handleMoveBack}>
+                {movingBack ? "Moving…" : "Move Back to Picking"}
+              </button>
+            )}
+            <button style={cancelLinkStyle} disabled={cancelling} onClick={handleCancel}>
+              {cancelling ? "Cancelling…" : "Cancel & Archive Order"}
+            </button>
+          </div>
         ) : (
           <span style={{ ...S.tinyMuted, fontSize: 11 }}>Only the reviewer or an admin can cancel this order.</span>
         )}
