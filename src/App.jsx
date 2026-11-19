@@ -72,6 +72,9 @@ function findMyOrder(orders, items, query) {
   const qDigits = q.replace(/\D/g, "");
 
   const matches = orders.filter((o) => {
+    // A cancelled order (including one moved back to picking) is never
+    // resumed — the reopened draft is found below instead.
+    if (o.status === "cancelled") return false;
     const requesterPhoneDigits = (o.requesterPhone || "").replace(/\D/g, "");
     const returnerPhoneDigits = (o.returnerPhone || "").replace(/\D/g, "");
     const requesterEmail = (o.requesterEmail || "").toLowerCase();
@@ -842,6 +845,61 @@ export default function App() {
     }
   }
 
+  // Staff moving a submitted order back to "picking" — e.g. it was
+  // submitted by accident or is missing items. Its details and items
+  // become an in-progress draft again (found with "Already started or
+  // submitted an order?" by phone or email), so the requester can add
+  // more items and submit it again. Reserved stock is released, since a
+  // draft doesn't reserve anything, and the original order is archived
+  // to History marked as moved back.
+  async function handleMoveOrderBackToPicking(order) {
+    const requesterLabel = order.requesterName || "this requester";
+    if (
+      !window.confirm(
+        `Move this order for ${requesterLabel} back to picking?\n\n` +
+          "It becomes an in-progress order again so items can be added, then it has to be submitted again " +
+          "(reviews and filler assignments start over). Its reserved items are released until then."
+      )
+    ) {
+      return;
+    }
+    const draftId = await saveDraft(
+      null,
+      {
+        name: order.requesterName,
+        phone: order.requesterPhone,
+        eventType: order.eventType,
+        eventDate: order.eventDate,
+        pickupDate: order.pickupDate,
+        returnDate: order.returnDate,
+        circuit: order.circuit,
+        hasReturner: order.hasReturner,
+        returnerName: order.returnerName,
+        returnerPhone: order.returnerPhone,
+        returnerEmail: order.returnerEmail,
+        returnerCircuit: order.returnerCircuit,
+      },
+      order.requesterEmail,
+      order.notes,
+      (order.items || []).map((li) => ({ name: li.name, qty: li.qty }))
+    );
+    if (!draftId) {
+      window.alert("Couldn't move the order back to picking — nothing was changed. Check your connection and try again.");
+      return;
+    }
+    for (const li of order.items || []) {
+      const liveItem = items.find((i) => i.name === li.name);
+      if (liveItem) {
+        const stillOut = Math.min(li.qty, liveItem.out || 0);
+        if (stillOut > 0) {
+          // eslint-disable-next-line no-await-in-loop
+          await applyCheckChange(liveItem.id, -stillOut, "Order moved back to picking", "Order moved back to picking by staff");
+        }
+      }
+    }
+    await updateOrder(order.id, { status: "cancelled", movedBackToPickingAtMs: Date.now(), movedBackToDraftId: draftId });
+  }
+
   // Cancels an in-progress (not-yet-submitted) draft. A draft never
   // reserves live inventory — that only happens once an order is
   // actually submitted — so cancelling one is just deleting the draft
@@ -935,6 +993,7 @@ export default function App() {
             onResendReadyEmail={handleResendReadyEmail}
             onResendSubmittedEmail={handleResendSubmittedEmail}
             onCancelOrder={handleCancelOrder}
+            onMoveBackToPicking={handleMoveOrderBackToPicking}
             onUpdateOrderItems={handleUpdateOrderItems}
             onCancelDraft={handleCancelDraft}
             onUpdateDraftItems={handleUpdateDraftItems}
@@ -1044,28 +1103,30 @@ export default function App() {
       </main>
 
       {tab === "inventory" && myOrderPhase === "none" && !reviewOpen && (
-        <div style={{ position: "fixed", right: 16, bottom: 16, zIndex: 50, display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
-          {checkedOutItems.length > 0 && (
-            <button style={S.secondaryBtn} onClick={() => setReviewOpen(true)}>
-              Review &amp; Submit
+        <>
+          {/* Save sits bottom-left and "Review & Submit" bottom-right, far
+              apart, so nobody taps Save when they meant to submit. */}
+          <div style={{ ...S.fabCorner, left: 16, alignItems: "flex-start" }}>
+            {!contactInfoComplete && <div style={S.fabHint}>Fill out all Request Details fields to save</div>}
+            <button
+              style={{ ...S.fabSubmit, ...(contactInfoComplete ? {} : S.fabSubmitOff) }}
+              onClick={handleSaveDraft}
+              disabled={!contactInfoComplete}
+              title={contactInfoComplete ? undefined : "Fill out every field in Request Details before saving"}
+            >
+              <Icon.bell />
+              <span>Save</span>
+              {checkedOutItems.length > 0 && <span style={S.fabBadge}>{checkedOutItems.length}</span>}
             </button>
-          )}
-          <button
-            style={{ ...S.fabSubmit, ...(contactInfoComplete ? {} : S.btnDisabled) }}
-            onClick={handleSaveDraft}
-            disabled={!contactInfoComplete}
-            title={contactInfoComplete ? undefined : "Fill out every field in Request Details before saving"}
-          >
-            <Icon.bell />
-            <span>Save</span>
-            {checkedOutItems.length > 0 && <span style={S.fabBadge}>{checkedOutItems.length}</span>}
-          </button>
-          {!contactInfoComplete && (
-            <div style={{ ...S.tinyMuted, background: "#fff", padding: "4px 10px", borderRadius: 8, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
-              Fill out all Request Details fields to save
+          </div>
+          {checkedOutItems.length > 0 && (
+            <div style={{ ...S.fabCorner, right: 16, alignItems: "flex-end" }}>
+              <button style={S.fabReview} onClick={() => setReviewOpen(true)}>
+                Review &amp; Submit
+              </button>
             </div>
           )}
-        </div>
+        </>
       )}
 
       {saveConfirm && (
