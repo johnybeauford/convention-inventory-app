@@ -98,7 +98,17 @@ export const S = {
   saveNoteBtn: { background: NAVY, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" },
   savedFlash: { fontSize: 12, color: "#1e8449", fontWeight: 600 },
 
-  fabSubmit: { position: "fixed", bottom: 18, right: 18, display: "flex", alignItems: "center", gap: 8, background: NAVY, color: "#fff", border: "none", borderRadius: 30, padding: "13px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 14px rgba(26,26,46,0.4)", zIndex: 40 },
+  // Floating buttons on the order page: Save bottom-left (light),
+  // "Review & Submit" bottom-right (dark, the main next step). At least
+  // 44px tall so they're easy to tap, and lifted above the iPhone's
+  // home bar.
+  fabCorner: { position: "fixed", bottom: "calc(16px + env(safe-area-inset-bottom))", zIndex: 50, display: "flex", flexDirection: "column", gap: 6, maxWidth: "calc(50% - 24px)" },
+  fabSubmit: { display: "flex", alignItems: "center", gap: 6, minHeight: 44, background: "#eef0f5", color: NAVY, border: "1.5px solid #c9ccd4", borderRadius: 22, padding: "0 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", boxShadow: "0 2px 8px rgba(26,26,46,0.15)", whiteSpace: "nowrap" },
+  fabReview: { display: "flex", alignItems: "center", minHeight: 44, background: NAVY, color: "#fff", border: "none", borderRadius: 22, padding: "0 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 14px rgba(26,26,46,0.4)", whiteSpace: "nowrap" },
+  // Faded look for Save before the details are filled in: solid, not
+  // see-through, so the page behind it doesn't show through.
+  fabSubmitOff: { background: "#f4f5f7", color: "#9aa0ab", borderStyle: "dashed", boxShadow: "none", cursor: "not-allowed" },
+  fabHint: { fontSize: 11, color: "#555", background: "#fff", padding: "4px 10px", borderRadius: 8, boxShadow: "0 1px 3px rgba(0,0,0,0.12)", lineHeight: 1.3 },
   fabBadge: { background: "#e74c3c", color: "#fff", borderRadius: 20, padding: "2px 8px", fontSize: 11, fontWeight: 800 },
 
   overlay: { position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 1000, padding: 0 },
