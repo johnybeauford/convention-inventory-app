@@ -5,6 +5,7 @@ assembly and convention equipment.
 
 **Live site:** https://convention-inventory-app.vercel.app
 
+
 ---
 
 ## What the app does
