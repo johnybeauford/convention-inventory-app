@@ -19,6 +19,20 @@ function makeId() {
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// Groups an order's line items by category (same grouping used on the
+// Orders page and the pick/check-in screens), sorted by category name.
+function groupByCategory(lineItems) {
+  const byCategory = new Map();
+  for (const li of lineItems) {
+    const cat = li.category || "Uncategorized";
+    if (!byCategory.has(cat)) byCategory.set(cat, []);
+    byCategory.get(cat).push(li);
+  }
+  return Array.from(byCategory.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([category, catItems]) => ({ category, items: catItems }));
+}
+
 // Phase 3 follow-up: once every item on an order is checked back in, it
 // lands here so staff can log anything that needs attention (broken,
 // missing, needs a new photo/description, or anything else). Any
@@ -49,7 +63,7 @@ export function ReturnReviewPage({
         const lineItems = (order.items || []).map((li) => {
           const liveItem = items.find((i) => i.name === li.name);
           const stillOut = liveItem ? Math.min(li.qty, liveItem.out || 0) : 0;
-          return { ...li, stillOut };
+          return { ...li, stillOut, category: liveItem ? liveItem.category : "Uncategorized" };
         });
         const fullyReturned = lineItems.length > 0 && lineItems.every((li) => li.stillOut === 0);
         const actionItems = Array.isArray(order.returnActionItems) ? order.returnActionItems : [];
@@ -200,10 +214,17 @@ function ReturnOrderCard({ order, volunteers, isReviewer, currentVolunteerName, 
       </div>
 
       <div style={{ ...S.summaryListWrap, marginTop: 10 }}>
-        {order.lineItems.map((li, idx) => (
-          <div key={idx} style={S.summaryRow}>
-            <span>{li.name}</span>
-            <span style={S.summaryQty}>×{li.qty}</span>
+        {groupByCategory(order.lineItems).map((group) => (
+          <div key={group.category}>
+            <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: "#888", margin: "8px 0 2px" }}>
+              {group.category}
+            </div>
+            {group.items.map((li, idx) => (
+              <div key={idx} style={S.summaryRow}>
+                <span>{li.name}</span>
+                <span style={S.summaryQty}>×{li.qty}</span>
+              </div>
+            ))}
           </div>
         ))}
       </div>
