@@ -273,6 +273,10 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
   const pickingChecklist = order.pickingChecklist || {};
   const gatheredCount = order.lineItems.filter((li) => pickingChecklist[li.name]).length;
   const totalCount = order.lineItems.length;
+  // An order with no line items at all (shouldn't normally happen, but
+  // isn't something to get stuck on) counts as fully gathered so Mark
+  // Ready isn't permanently blocked for it.
+  const allGathered = totalCount === 0 || gatheredCount === totalCount;
   const canToggleGathered =
     (order.assignedFillers || []).includes(currentVolunteerName) || Boolean(isCurrentVolunteerAdmin);
   function toggleGathered(name) {
@@ -705,9 +709,18 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
               ))}
             </select>
           </label>
-          <button style={{ ...S.primaryBtn, marginTop: 10 }} disabled={sending || !pointOfContactId} onClick={handleMarkReady}>
+          <button
+            style={{ ...S.primaryBtn, marginTop: 10, ...(sending || !pointOfContactId || !allGathered ? S.btnDisabled : {}) }}
+            disabled={sending || !pointOfContactId || !allGathered}
+            onClick={handleMarkReady}
+          >
             {sending ? "Marking Ready…" : "Mark Ready & Notify Requester"}
           </button>
+          {!allGathered && (
+            <div style={{ ...S.tinyMuted, fontSize: 11, marginTop: 6 }}>
+              Check off every item on the Gathering Checklist above before marking this order ready.
+            </div>
+          )}
         </div>
       )}
 
