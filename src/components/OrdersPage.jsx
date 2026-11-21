@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { flushSync } from "react-dom";
 import { S } from "../styles";
 import { EditOrderModal } from "./EditOrderModal";
+import { Lightbox } from "./Lightbox";
+import { getItemImages } from "../imageUtils";
 
 // currentVolunteerName is who's actually logged in right now — used to
 // make sure only a designated Reviewer can click "Mark as Reviewed"
@@ -69,7 +71,14 @@ export function OrdersPage({
       const lineItems = (order.items || []).map((li) => {
         const liveItem = items.find((i) => i.name === li.name);
         const stillOut = liveItem ? Math.min(li.qty, liveItem.out || 0) : 0;
-        return { ...li, stillOut, exists: Boolean(liveItem), category: liveItem ? liveItem.category : "Uncategorized" };
+        const thumbnail = liveItem ? getItemImages(liveItem)[0] || null : null;
+        return {
+          ...li,
+          stillOut,
+          exists: Boolean(liveItem),
+          category: liveItem ? liveItem.category : "Uncategorized",
+          thumbnail,
+        };
       });
       const isActive =
         order.status !== "cancelled" && order.status !== "archived" && lineItems.some((li) => li.stillOut > 0);
@@ -222,6 +231,7 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
   const [archiving, setArchiving] = useState(false);
   const [resendingReady, setResendingReady] = useState(false);
   const [resendReadyFlash, setResendReadyFlash] = useState(null); // { text, tone: "ok" | "error" } | null
+  const [checklistLightbox, setChecklistLightbox] = useState(null); // { src, name } | null
 
   const [printing, setPrinting] = useState(false);
 
@@ -670,27 +680,56 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
                   {group.items.map((li, idx) => {
                     const checked = Boolean(pickingChecklist[li.name]);
                     return (
-                      <label
-                        key={idx}
-                        style={{
-                          ...S.summaryRow,
-                          alignItems: "center",
-                          gap: 8,
-                          cursor: canToggleGathered ? "pointer" : "default",
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={!canToggleGathered}
-                          onChange={() => toggleGathered(li.name)}
-                          style={{ width: 16, height: 16, flexShrink: 0 }}
-                        />
-                        <span style={{ flex: 1, textDecoration: checked ? "line-through" : "none", color: checked ? "#999" : "inherit" }}>
-                          {li.name}
-                        </span>
+                      <div key={idx} style={{ ...S.summaryRow, alignItems: "center", gap: 8 }}>
+                        {li.thumbnail ? (
+                          <img
+                            src={li.thumbnail}
+                            alt={li.name}
+                            onClick={() => setChecklistLightbox({ src: li.thumbnail, name: li.name })}
+                            style={{ width: 32, height: 32, borderRadius: 6, objectFit: "cover", cursor: "zoom-in", flexShrink: 0 }}
+                          />
+                        ) : (
+                          <div
+                            style={{
+                              width: 32,
+                              height: 32,
+                              borderRadius: 6,
+                              background: "#f0f0f0",
+                              flexShrink: 0,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: 9,
+                              color: "#bbb",
+                              textAlign: "center",
+                              lineHeight: 1.1,
+                            }}
+                          >
+                            No photo
+                          </div>
+                        )}
+                        <label
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            flex: 1,
+                            cursor: canToggleGathered ? "pointer" : "default",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={!canToggleGathered}
+                            onChange={() => toggleGathered(li.name)}
+                            style={{ width: 16, height: 16, flexShrink: 0 }}
+                          />
+                          <span style={{ flex: 1, textDecoration: checked ? "line-through" : "none", color: checked ? "#999" : "inherit" }}>
+                            {li.name}
+                          </span>
+                        </label>
                         <span style={S.summaryQty}>×{li.qty}</span>
-                      </label>
+                      </div>
                     );
                   })}
                 </div>
@@ -841,6 +880,14 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
           </tbody>
         </table>
       </div>
+
+      {checklistLightbox && (
+        <Lightbox
+          images={[checklistLightbox.src]}
+          alt={checklistLightbox.name}
+          onClose={() => setChecklistLightbox(null)}
+        />
+      )}
     </div>
   );
 }
