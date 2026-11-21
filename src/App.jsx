@@ -144,6 +144,20 @@ export default function App() {
     deleteBreakfixProject,
   } = useInventory();
 
+  // Stamps each line item with its current catalog category before it
+  // goes into an email payload, so every notification email can group
+  // "Items Requested / Ready / to Gather" by department (Stage, Audio,
+  // etc.) the same way the Orders page and the pick/check-in screens
+  // do. Order records themselves only ever store {name, qty} — this is
+  // looked up fresh at send time, never persisted, so a later catalog
+  // re-categorization is reflected correctly in any email sent after.
+  function withCategory(orderItems) {
+    return (orderItems || []).map((li) => {
+      const liveItem = items.find((i) => i.name === li.name);
+      return { ...li, category: liveItem ? liveItem.category : "Uncategorized" };
+    });
+  }
+
   // A password-reset email link lands here with ?resetToken=... in the
   // URL — captured once on first render (before anything strips it),
   // and the URL is cleaned up immediately so refreshing or sharing the
@@ -364,7 +378,7 @@ export default function App() {
           requester: { name: order.requester.name, phone: order.requester.phone },
           eventType: order.requester.eventType,
           eventDate: order.requester.eventDate,
-          items: order.items,
+          items: withCategory(order.items),
         }),
       });
       if (!res.ok) {
@@ -393,7 +407,7 @@ export default function App() {
           eventDate: order.requester.eventDate,
           pickupDate: order.requester.pickupDate,
           returnDate: order.requester.returnDate,
-          items: order.items,
+          items: withCategory(order.items),
         }),
       });
       if (!res.ok) {
@@ -491,7 +505,7 @@ export default function App() {
           eventType: order.eventType,
           eventDate: order.eventDate,
           pickupDate: order.pickupDate,
-          items: order.items,
+          items: withCategory(order.items),
         }),
       });
     } catch (err) {
@@ -515,7 +529,7 @@ export default function App() {
           eventType: order.eventType,
           eventDate: order.eventDate,
           pickupDate: order.pickupDate,
-          items: order.items,
+          items: withCategory(order.items),
         }),
       });
     } catch (err) {
@@ -538,7 +552,7 @@ export default function App() {
         body: JSON.stringify({
           requesterEmail: order.requesterEmail,
           requester: { name: order.requesterName, phone: order.requesterPhone },
-          items: order.items,
+          items: withCategory(order.items),
           pointOfContact: { name: pointOfContact?.name || "", phone: pointOfContact?.phone || "" },
         }),
       });
@@ -561,7 +575,7 @@ export default function App() {
         body: JSON.stringify({
           requesterEmail: order.requesterEmail,
           requester: { name: order.requesterName, phone: order.requesterPhone },
-          items: order.items,
+          items: withCategory(order.items),
           pointOfContact: { name: order.pointOfContactName || "", phone: order.pointOfContactPhone || "" },
         }),
       });
@@ -597,7 +611,7 @@ export default function App() {
           eventDate: order.eventDate,
           pickupDate: order.pickupDate,
           returnDate: order.returnDate,
-          items: order.items,
+          items: withCategory(order.items),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -632,7 +646,7 @@ export default function App() {
         body: JSON.stringify({
           reviewerEmail: reviewerEmails,
           requester: { name: order.requesterName, phone: order.requesterPhone },
-          items: order.items,
+          items: withCategory(order.items),
         }),
       });
       if (!res.ok) {
@@ -816,7 +830,7 @@ export default function App() {
           requester: { name: requester.name, phone: requester.phone },
           eventType: requester.eventType,
           eventDate: requester.eventDate,
-          items: newItems,
+          items: withCategory(newItems),
         }),
       });
       if (!res.ok) console.error("notify-review failed:", res.status, await res.text());
@@ -837,7 +851,7 @@ export default function App() {
           eventDate: requester.eventDate,
           pickupDate: requester.pickupDate,
           returnDate: requester.returnDate,
-          items: newItems,
+          items: withCategory(newItems),
         }),
       });
       if (!res.ok) console.error("notify-submitted failed:", res.status, await res.text());
