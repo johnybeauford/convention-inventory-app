@@ -23,6 +23,7 @@ export function OrdersPage({
   onResendReadyEmail,
   onResendSubmittedEmail,
   onCancelOrder,
+  onArchiveOrder,
   onMoveBackToPicking,
   onCancelDraft,
   onUpdateDraftItems,
@@ -54,7 +55,8 @@ export function OrdersPage({
         const stillOut = liveItem ? Math.min(li.qty, liveItem.out || 0) : 0;
         return { ...li, stillOut, exists: Boolean(liveItem) };
       });
-      const isActive = order.status !== "cancelled" && lineItems.some((li) => li.stillOut > 0);
+      const isActive =
+        order.status !== "cancelled" && order.status !== "archived" && lineItems.some((li) => li.stillOut > 0);
       const status = order.status || "submitted";
       const reviewedBy = Array.isArray(order.reviewedBy) ? order.reviewedBy : [];
       const assignedFillers = Array.isArray(order.assignedFillers) ? order.assignedFillers : [];
@@ -128,6 +130,7 @@ export function OrdersPage({
           onResendReadyEmail={onResendReadyEmail}
           onResendSubmittedEmail={onResendSubmittedEmail}
           onCancelOrder={onCancelOrder}
+          onArchiveOrder={onArchiveOrder}
           onMoveBackToPicking={onMoveBackToPicking}
           onUpdateOrder={onUpdateOrder}
           onEditOrder={() => setEditingOrder(order)}
@@ -196,9 +199,10 @@ export function OrdersPage({
   );
 }
 
-function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVolunteerName, canCancel, onMarkReady, onAssignFillers, onResendFillerNotice, onResendReadyEmail, onResendSubmittedEmail, onCancelOrder, onMoveBackToPicking, onUpdateOrder, onEditOrder }) {
+function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVolunteerName, canCancel, onMarkReady, onAssignFillers, onResendFillerNotice, onResendReadyEmail, onResendSubmittedEmail, onCancelOrder, onArchiveOrder, onMoveBackToPicking, onUpdateOrder, onEditOrder }) {
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const [resendingReady, setResendingReady] = useState(false);
   const [resendReadyFlash, setResendReadyFlash] = useState(null); // { text, tone: "ok" | "error" } | null
 
@@ -260,6 +264,15 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
       await onCancelOrder(order);
     } finally {
       setCancelling(false);
+    }
+  }
+
+  async function handleArchive() {
+    setArchiving(true);
+    try {
+      await onArchiveOrder(order);
+    } finally {
+      setArchiving(false);
     }
   }
 
@@ -642,12 +655,17 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
                 {movingBack ? "Moving…" : "Move Back to Picking"}
               </button>
             )}
+            <button style={editLinkStyle} disabled={archiving} onClick={handleArchive}>
+              {archiving ? "Archiving…" : "Archive Order"}
+            </button>
             <button style={cancelLinkStyle} disabled={cancelling} onClick={handleCancel}>
-              {cancelling ? "Cancelling…" : "Cancel & Archive Order"}
+              {cancelling ? "Cancelling…" : "Cancel Order"}
             </button>
           </div>
         ) : (
-          <span style={{ ...S.tinyMuted, fontSize: 11 }}>Only the reviewer or an admin can cancel this order.</span>
+          <span style={{ ...S.tinyMuted, fontSize: 11 }}>
+            Only the reviewer or an admin can cancel or archive this order.
+          </span>
         )}
       </div>
 
