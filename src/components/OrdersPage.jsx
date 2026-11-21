@@ -262,6 +262,17 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
   const alreadyReviewedByMe = reviewedBy.includes(currentVolunteerName);
   const reviewsStillNeeded = Math.max(REQUIRED_REVIEWS - reviewedBy.length, 0);
 
+  // Digital gathering checklist (see the "assigned" status block below)
+  // — stored directly on the order as a simple name → checked map, so
+  // it's shared live across everyone viewing this order and survives
+  // a refresh or a different device, same as reviewedBy/assignedFillers.
+  const pickingChecklist = order.pickingChecklist || {};
+  const gatheredCount = order.lineItems.filter((li) => pickingChecklist[li.name]).length;
+  const totalCount = order.lineItems.length;
+  function toggleGathered(name) {
+    onUpdateOrder(order.id, { pickingChecklist: { ...pickingChecklist, [name]: !pickingChecklist[name] } });
+  }
+
   const [movingBack, setMovingBack] = useState(false);
   async function handleMoveBack() {
     setMovingBack(true);
@@ -613,6 +624,56 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
             Assigned to: <strong>{order.assignedFillers.join(", ")}</strong>
           </div>
           {renderResendBlock()}
+
+          {/* Digital gathering checklist — any assigned filler (or
+              anyone else with Orders access) can check items off as
+              they're physically gathered. Saved on the order itself
+              (pickingChecklist, keyed by item name) so progress is
+              shared live across everyone looking at this order, same
+              as the review/assignment steps above, and survives a
+              page refresh or switching devices. Purely a helper —
+              it doesn't gate Mark Ready, since staff may still want to
+              mark an order ready without using the checklist. */}
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+              <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: "#888" }}>
+                Gathering Checklist
+              </div>
+              <div style={S.tinyMuted}>
+                {gatheredCount} of {totalCount} gathered
+              </div>
+            </div>
+            <div style={{ ...S.summaryListWrap, marginTop: 4 }}>
+              {groupByCategory(order.lineItems).map((group) => (
+                <div key={group.category}>
+                  <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: "#888", margin: "8px 0 2px" }}>
+                    {group.category}
+                  </div>
+                  {group.items.map((li, idx) => {
+                    const checked = Boolean(pickingChecklist[li.name]);
+                    return (
+                      <label
+                        key={idx}
+                        style={{ ...S.summaryRow, alignItems: "center", gap: 8, cursor: "pointer" }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleGathered(li.name)}
+                          style={{ width: 16, height: 16, flexShrink: 0 }}
+                        />
+                        <span style={{ flex: 1, textDecoration: checked ? "line-through" : "none", color: checked ? "#999" : "inherit" }}>
+                          {li.name}
+                        </span>
+                        <span style={S.summaryQty}>×{li.qty}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+
           <label style={{ ...S.fieldLabel, marginTop: 10 }}>
             Point of Contact (for pickup/drop-off — included in the ready email)
             <select style={S.fieldInput} value={pointOfContactId} onChange={(e) => setPointOfContactId(e.target.value)}>
