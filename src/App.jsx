@@ -72,9 +72,9 @@ function findMyOrder(orders, items, query) {
   const qDigits = q.replace(/\D/g, "");
 
   const matches = orders.filter((o) => {
-    // A cancelled order (including one moved back to picking) is never
-    // resumed — the reopened draft is found below instead.
-    if (o.status === "cancelled") return false;
+    // A cancelled or archived order (including one moved back to picking)
+    // is never resumed — the reopened draft is found below instead.
+    if (o.status === "cancelled" || o.status === "archived") return false;
     const requesterPhoneDigits = (o.requesterPhone || "").replace(/\D/g, "");
     const returnerPhoneDigits = (o.returnerPhone || "").replace(/\D/g, "");
     const requesterEmail = (o.requesterEmail || "").toLowerCase();
@@ -274,7 +274,7 @@ export default function App() {
   const myLineItems = useMemo(() => (myOrder ? computeLineItems(myOrder, items) : []), [myOrder, items]);
   const myOrderPhase = useMemo(() => {
     if (!myOrder) return "none";
-    if (myOrder.status === "cancelled") return "none";
+    if (myOrder.status === "cancelled" || myOrder.status === "archived") return "none";
     const allDone = myLineItems.length > 0 && myLineItems.every((li) => li.stillOut === 0);
     if (allDone) return "none";
     return myOrder.status === "fulfilled" ? "ready" : "submitted";
@@ -699,31 +699,32 @@ export default function App() {
     }
   }
 
-  // Force-closes an order at any stage — even if nothing's actually
-  // been filled or returned. Any of its items still checked out get
-  // returned to available first (so catalog counts stay correct),
-  // then the order is marked cancelled, which moves it to History
-  // since it's no longer "active."
+  // Cancels an order exactly as-is: just flips its status to
+  // "cancelled" and moves it to History. Nothing else about the order
+  // changes, and live inventory is left untouched — if anything on it
+  // is still checked out, that stock stays marked out until staff
+  // check it in or adjust it themselves. Separate from archiving (see
+  // handleArchiveOrder below): cancel means "this request never
+  // should have gone through," archive means "this one's done."
   async function handleCancelOrder(order) {
     const requesterLabel = order.requesterName || "this requester";
-    if (
-      !window.confirm(
-        `Cancel and archive this order for ${requesterLabel}? Any items still checked out will be returned to available.`
-      )
-    ) {
+    if (!window.confirm(`Cancel this order for ${requesterLabel}? This can't be undone.`)) {
       return;
     }
-    for (const li of order.items || []) {
-      const liveItem = items.find((i) => i.name === li.name);
-      if (liveItem) {
-        const stillOut = Math.min(li.qty, liveItem.out || 0);
-        if (stillOut > 0) {
-          // eslint-disable-next-line no-await-in-loop
-          await applyCheckChange(liveItem.id, -stillOut, "Order cancelled", "Order cancelled/archived by staff");
-        }
-      }
-    }
     await updateOrder(order.id, { status: "cancelled" });
+  }
+
+  // Marks an order complete and moves it to History, same as if every
+  // item had been checked back in — for closing out an order by hand
+  // without going through the actual check-in flow. Like cancel, this
+  // makes no other changes: the order's items, notes and details all
+  // stay exactly as they were, and live inventory isn't touched.
+  async function handleArchiveOrder(order) {
+    const requesterLabel = order.requesterName || "this requester";
+    if (!window.confirm(`Archive this order for ${requesterLabel} as complete? This moves it to History.`)) {
+      return;
+    }
+    await updateOrder(order.id, { status: "archived" });
   }
 
   // Staff editing an order's items: for each item whose quantity
@@ -993,6 +994,7 @@ export default function App() {
             onResendReadyEmail={handleResendReadyEmail}
             onResendSubmittedEmail={handleResendSubmittedEmail}
             onCancelOrder={handleCancelOrder}
+            onArchiveOrder={handleArchiveOrder}
             onMoveBackToPicking={handleMoveOrderBackToPicking}
             onUpdateOrderItems={handleUpdateOrderItems}
             onCancelDraft={handleCancelDraft}
