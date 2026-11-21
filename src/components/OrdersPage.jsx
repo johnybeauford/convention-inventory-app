@@ -140,6 +140,7 @@ export function OrdersPage({
           reviewerNames={reviewerNames}
           currentVolunteerName={currentVolunteerName}
           canCancel={canCancel}
+          isCurrentVolunteerAdmin={isCurrentVolunteerAdmin}
           onMarkReady={onMarkReady}
           onAssignFillers={onAssignFillers}
           onResendFillerNotice={onResendFillerNotice}
@@ -215,7 +216,7 @@ export function OrdersPage({
   );
 }
 
-function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVolunteerName, canCancel, onMarkReady, onAssignFillers, onResendFillerNotice, onResendReadyEmail, onResendSubmittedEmail, onCancelOrder, onArchiveOrder, onMoveBackToPicking, onUpdateOrder, onEditOrder }) {
+function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVolunteerName, canCancel, isCurrentVolunteerAdmin, onMarkReady, onAssignFillers, onResendFillerNotice, onResendReadyEmail, onResendSubmittedEmail, onCancelOrder, onArchiveOrder, onMoveBackToPicking, onUpdateOrder, onEditOrder }) {
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -266,10 +267,16 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
   // — stored directly on the order as a simple name → checked map, so
   // it's shared live across everyone viewing this order and survives
   // a refresh or a different device, same as reviewedBy/assignedFillers.
+  // Only the volunteer(s) this order was actually assigned to — or a
+  // full admin — can check items off; anyone else with Orders access
+  // can still see the checklist and its progress, just not toggle it.
   const pickingChecklist = order.pickingChecklist || {};
   const gatheredCount = order.lineItems.filter((li) => pickingChecklist[li.name]).length;
   const totalCount = order.lineItems.length;
+  const canToggleGathered =
+    (order.assignedFillers || []).includes(currentVolunteerName) || Boolean(isCurrentVolunteerAdmin);
   function toggleGathered(name) {
+    if (!canToggleGathered) return;
     onUpdateOrder(order.id, { pickingChecklist: { ...pickingChecklist, [name]: !pickingChecklist[name] } });
   }
 
@@ -625,9 +632,11 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
           </div>
           {renderResendBlock()}
 
-          {/* Digital gathering checklist — any assigned filler (or
-              anyone else with Orders access) can check items off as
-              they're physically gathered. Saved on the order itself
+          {/* Digital gathering checklist — only the volunteer(s) this
+              order is assigned to, or a full admin, can check items off
+              as they're physically gathered (see canToggleGathered
+              above); anyone else with Orders access can still see it
+              and its progress, read-only. Saved on the order itself
               (pickingChecklist, keyed by item name) so progress is
               shared live across everyone looking at this order, same
               as the review/assignment steps above, and survives a
@@ -643,6 +652,11 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
                 {gatheredCount} of {totalCount} gathered
               </div>
             </div>
+            {!canToggleGathered && (
+              <div style={{ ...S.tinyMuted, fontSize: 11, marginBottom: 2 }}>
+                Only {order.assignedFillers.join(" or ")} (or an admin) can check these off.
+              </div>
+            )}
             <div style={{ ...S.summaryListWrap, marginTop: 4 }}>
               {groupByCategory(order.lineItems).map((group) => (
                 <div key={group.category}>
@@ -654,11 +668,17 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
                     return (
                       <label
                         key={idx}
-                        style={{ ...S.summaryRow, alignItems: "center", gap: 8, cursor: "pointer" }}
+                        style={{
+                          ...S.summaryRow,
+                          alignItems: "center",
+                          gap: 8,
+                          cursor: canToggleGathered ? "pointer" : "default",
+                        }}
                       >
                         <input
                           type="checkbox"
                           checked={checked}
+                          disabled={!canToggleGathered}
                           onChange={() => toggleGathered(li.name)}
                           style={{ width: 16, height: 16, flexShrink: 0 }}
                         />
