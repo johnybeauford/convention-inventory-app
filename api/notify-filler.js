@@ -60,16 +60,17 @@ export default async function handler(req, res) {
     return Array.from(byCategory.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }
 
-  // --- Plain-text fallback ---
+  // --- Plain-text fallback — a checkbox per line, so it reads as an
+  // actual checklist to tick by hand even in a plain-text inbox. ---
   const itemLinesText = groupByCategory(items)
     .map(([category, catItems]) => {
-      const rows = catItems.map((it) => `  • ${it.name} × ${it.qty}`).join("\n");
+      const rows = catItems.map((it) => `  [ ] ${it.name} × ${it.qty}`).join("\n");
       return `${category}:\n${rows}`;
     })
     .join("\n\n");
   const text = `You have been assigned to fill this request.
 
-Please gather the items below. After filling the order and notifying the requester, please reach out to them to coordinate pickup and return.
+Please gather the items below and check each one off as you go. You can also check items off right in the app (Admin > Orders) — progress saves there and anyone else helping fill this order will see it too. After filling the order and notifying the requester, please reach out to them to coordinate pickup and return.
 
 Requester: ${requesterName}
 Phone: ${requesterPhone}
@@ -85,13 +86,29 @@ Thanks for your hard work and your volunteer spirit!
 CEPC-Lubbock Inventory Team
 `;
 
-  // --- HTML version: same blended design as the other notify emails ---
-  const itemRowsHtml = groupByCategory(items)
+  // --- HTML version: a real checklist table — an empty checkbox square,
+  // the item, and its quantity, grouped by category with a department
+  // header row, matching the look of the printed pick lists. ---
+  const checklistRowsHtml = groupByCategory(items)
     .map(([category, catItems]) => {
-      const rows = catItems.map((it) => `✅ ${esc(it.name)} × ${esc(it.qty)}`).join("<br/>\n          ");
-      return `<div style="font-size:11px; font-weight:800; text-transform:uppercase; color:#888; margin:10px 0 2px;">${esc(category)}</div>\n          ${rows}`;
+      const rows = catItems
+        .map(
+          (it) => `
+          <tr>
+            <td style="width:30px; padding:6px 0; vertical-align:middle;">
+              <span style="display:inline-block; width:16px; height:16px; border:2px solid #0072CE; border-radius:3px;"></span>
+            </td>
+            <td style="padding:6px 0; font-size:14px; color:#1a1a2e;">${esc(it.name)}</td>
+            <td style="padding:6px 0; font-size:14px; color:#1a1a2e; font-weight:700; text-align:center; width:50px;">${esc(it.qty)}</td>
+          </tr>`
+        )
+        .join("");
+      return `
+          <tr>
+            <td colspan="3" style="font-size:11px; font-weight:800; text-transform:uppercase; color:#888; padding:12px 0 2px;">${esc(category)}</td>
+          </tr>${rows}`;
     })
-    .join("\n          ");
+    .join("");
 
   const html = `<!DOCTYPE html>
 <html>
@@ -109,7 +126,7 @@ CEPC-Lubbock Inventory Team
 
         <tr><td style="padding: 16px 36px 0;">
           <div style="background:#eaf3fc; border-radius:10px; padding:16px 18px; font-size:14px; color:#1a1a2e; line-height:1.6;">
-            Please gather the items below. After filling the order and notifying the requester, please reach out to them to coordinate pickup and return.
+            Please gather the items below and check each one off as you go. You can also check items off right in the app (<strong>Admin &gt; Orders</strong>) — progress saves there and anyone else helping fill this order will see it too. After filling the order and notifying the requester, please reach out to them to coordinate pickup and return.
           </div>
         </td></tr>
 
@@ -126,9 +143,9 @@ CEPC-Lubbock Inventory Team
 
         <tr><td style="padding: 22px 36px 0;">
           <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:#999; border-bottom:1px solid #eee; padding-bottom:6px;">Items to Gather</div>
-          <div style="font-size:14px; color:#333; padding-top:8px; line-height:1.9;">
-          ${itemRowsHtml || "(none)"}
-          </div>
+          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+            <tbody>${checklistRowsHtml || `<tr><td style="padding:8px 0; font-size:14px; color:#333;">(none)</td></tr>`}</tbody>
+          </table>
         </td></tr>
 
         <tr><td style="padding: 26px 36px 36px; font-size:14px; color:#333; line-height:1.6;">
