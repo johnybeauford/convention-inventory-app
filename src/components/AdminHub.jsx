@@ -32,6 +32,7 @@ export function AdminHub({
   onResendReadyEmail,
   onResendSubmittedEmail,
   onCancelOrder,
+  onArchiveOrder,
   onMoveBackToPicking,
   onUpdateOrderItems,
   onCancelDraft,
@@ -171,6 +172,7 @@ export function AdminHub({
           onResendReadyEmail={onResendReadyEmail}
           onResendSubmittedEmail={onResendSubmittedEmail}
           onCancelOrder={onCancelOrder}
+          onArchiveOrder={onArchiveOrder}
           onMoveBackToPicking={onMoveBackToPicking}
           onUpdateOrderItems={onUpdateOrderItems}
           onCancelDraft={onCancelDraft}
