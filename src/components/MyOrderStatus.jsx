@@ -98,12 +98,19 @@ export function MyOrderStatus({ order, lineItems, phase, onScanCheckIn, onManual
       )}
 
       <div style={{ ...S.summaryListWrap, marginTop: 10 }}>
-        {lineItems.map((li, idx) => (
-          <div key={idx} style={S.summaryRow}>
-            <span>{li.name}</span>
-            <span style={S.summaryQty}>
-              {phase === "ready" ? `${li.qty - li.stillOut} of ${li.qty} checked in` : `×${li.qty}`}
-            </span>
+        {groups.map((group) => (
+          <div key={group.department}>
+            <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: "#888", margin: "8px 0 2px" }}>
+              {group.department}
+            </div>
+            {group.items.map((li, idx) => (
+              <div key={idx} style={S.summaryRow}>
+                <span>{li.name}</span>
+                <span style={S.summaryQty}>
+                  {phase === "ready" ? `${li.qty - li.stillOut} of ${li.qty} checked in` : `×${li.qty}`}
+                </span>
+              </div>
+            ))}
           </div>
         ))}
       </div>
