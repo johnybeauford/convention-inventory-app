@@ -40,6 +40,23 @@ export function EditOrderModal({ order, items, title, hint, saveLabel, onSave, o
     .filter((it) => !editItems.some((li) => li.name === it.name))
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  // Groups the order's current items by category (Stage, Audio, etc.)
+  // — same grouping used on the Orders page and the pick/check-in
+  // screens — so editing an order's items reads the same way as
+  // everywhere else they're listed.
+  function groupByCategory(list) {
+    const byCategory = new Map();
+    for (const li of list) {
+      const liveItem = items.find((it) => it.name === li.name);
+      const cat = liveItem ? liveItem.category : "Uncategorized";
+      if (!byCategory.has(cat)) byCategory.set(cat, []);
+      byCategory.get(cat).push(li);
+    }
+    return Array.from(byCategory.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([category, catItems]) => ({ category, items: catItems }));
+  }
+
   function updateQty(name, qty) {
     const n = Math.max(parseInt(qty, 10) || 0, 0);
     setEditItems((prev) => prev.map((li) => (li.name === name ? { ...li, qty: n } : li)));
@@ -172,20 +189,27 @@ export function EditOrderModal({ order, items, title, hint, saveLabel, onSave, o
       <h3 style={{ ...S.cardTitle, fontSize: 15, marginTop: 16, marginBottom: 6 }}>Items</h3>
       <div style={S.summaryListWrap}>
         {editItems.length === 0 && <div style={S.tinyMuted}>No items on this order.</div>}
-        {editItems.map((li) => (
-          <div key={li.name} style={{ ...S.summaryRow, alignItems: "center" }}>
-            <span style={{ flex: 1 }}>{li.name}</span>
-            <input
-              type="number"
-              min="0"
-              style={{ ...S.qtySelect, width: 60, marginRight: 8 }}
-              value={li.qty}
-              onChange={(e) => updateQty(li.name, e.target.value)}
-              onFocus={(e) => e.target.select()}
-            />
-            <button style={S.adminDeleteBtn} onClick={() => removeItem(li.name)}>
-              Remove
-            </button>
+        {groupByCategory(editItems).map((group) => (
+          <div key={group.category}>
+            <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: "#888", margin: "8px 0 2px" }}>
+              {group.category}
+            </div>
+            {group.items.map((li) => (
+              <div key={li.name} style={{ ...S.summaryRow, alignItems: "center" }}>
+                <span style={{ flex: 1 }}>{li.name}</span>
+                <input
+                  type="number"
+                  min="0"
+                  style={{ ...S.qtySelect, width: 60, marginRight: 8 }}
+                  value={li.qty}
+                  onChange={(e) => updateQty(li.name, e.target.value)}
+                  onFocus={(e) => e.target.select()}
+                />
+                <button style={S.adminDeleteBtn} onClick={() => removeItem(li.name)}>
+                  Remove
+                </button>
+              </div>
+            ))}
           </div>
         ))}
       </div>
