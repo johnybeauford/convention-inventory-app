@@ -13,6 +13,22 @@ import { EditOrderModal } from "./EditOrderModal";
 // access), can do it.
 const REQUIRED_REVIEWS = 1;
 
+// Groups an order's line items by category (same grouping used for
+// check-in and the item-picking screens), sorted by category name, so
+// staff can see at a glance what's been requested from each
+// department — Stage, Audio, etc. — instead of one flat list.
+function groupByCategory(lineItems) {
+  const byCategory = new Map();
+  for (const li of lineItems) {
+    const cat = li.category || "Uncategorized";
+    if (!byCategory.has(cat)) byCategory.set(cat, []);
+    byCategory.get(cat).push(li);
+  }
+  return Array.from(byCategory.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([category, catItems]) => ({ category, items: catItems }));
+}
+
 export function OrdersPage({
   orders,
   drafts,
@@ -53,7 +69,7 @@ export function OrdersPage({
       const lineItems = (order.items || []).map((li) => {
         const liveItem = items.find((i) => i.name === li.name);
         const stillOut = liveItem ? Math.min(li.qty, liveItem.out || 0) : 0;
-        return { ...li, stillOut, exists: Boolean(liveItem) };
+        return { ...li, stillOut, exists: Boolean(liveItem), category: liveItem ? liveItem.category : "Uncategorized" };
       });
       const isActive =
         order.status !== "cancelled" && order.status !== "archived" && lineItems.some((li) => li.stillOut > 0);
@@ -434,16 +450,23 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
       )}
 
       <div style={{ ...S.summaryListWrap, marginTop: 10 }}>
-        {order.lineItems.map((li, idx) => (
-          <div key={idx} style={S.summaryRow}>
-            <span>
-              {li.name}
-              {!li.exists && <span style={{ color: "#c0392b", fontSize: 11 }}> (item no longer in catalog)</span>}
-            </span>
-            <span style={{ ...S.summaryQty, textAlign: "right" }}>
-              <div style={{ fontSize: 10, textTransform: "uppercase", color: "#999", fontWeight: 700 }}>Requested</div>
-              <div style={{ fontWeight: 700, color: "#1a1a2e" }}>{li.qty}</div>
-            </span>
+        {groupByCategory(order.lineItems).map((group) => (
+          <div key={group.category}>
+            <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: "#888", margin: "8px 0 2px" }}>
+              {group.category}
+            </div>
+            {group.items.map((li, idx) => (
+              <div key={idx} style={S.summaryRow}>
+                <span>
+                  {li.name}
+                  {!li.exists && <span style={{ color: "#c0392b", fontSize: 11 }}> (item no longer in catalog)</span>}
+                </span>
+                <span style={{ ...S.summaryQty, textAlign: "right" }}>
+                  <div style={{ fontSize: 10, textTransform: "uppercase", color: "#999", fontWeight: 700 }}>Requested</div>
+                  <div style={{ fontWeight: 700, color: "#1a1a2e" }}>{li.qty}</div>
+                </span>
+              </div>
+            ))}
           </div>
         ))}
       </div>
@@ -703,14 +726,23 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
             </tr>
           </thead>
           <tbody>
-            {order.lineItems.map((li, idx) => (
-              <tr key={idx}>
-                <td style={printTdStyle}>
-                  {li.name}
-                  {!li.exists && " (item no longer in catalog)"}
-                </td>
-                <td style={{ ...printTdStyle, textAlign: "center", fontWeight: 700 }}>{li.qty}</td>
-              </tr>
+            {groupByCategory(order.lineItems).map((group) => (
+              <React.Fragment key={group.category}>
+                <tr>
+                  <td colSpan={2} style={{ ...printTdStyle, fontWeight: 800, textTransform: "uppercase", fontSize: 11, color: "#888", border: "none", paddingTop: 10, paddingBottom: 2 }}>
+                    {group.category}
+                  </td>
+                </tr>
+                {group.items.map((li, idx) => (
+                  <tr key={idx}>
+                    <td style={printTdStyle}>
+                      {li.name}
+                      {!li.exists && " (item no longer in catalog)"}
+                    </td>
+                    <td style={{ ...printTdStyle, textAlign: "center", fontWeight: 700 }}>{li.qty}</td>
+                  </tr>
+                ))}
+              </React.Fragment>
             ))}
           </tbody>
         </table>
