@@ -53,7 +53,25 @@ export default async function handler(req, res) {
     return;
   }
 
-  const itemLines = items.map((it) => `• ${it.name} × ${it.qty}`).join("\n");
+  // Groups items by category (Stage, Audio, etc.) — same grouping used
+  // in the app's Orders page and pick/check-in screens — so this list
+  // reads the same way everywhere a requester or staff member sees it.
+  function groupByCategory(list) {
+    const byCategory = new Map();
+    for (const it of list) {
+      const cat = it.category || "Uncategorized";
+      if (!byCategory.has(cat)) byCategory.set(cat, []);
+      byCategory.get(cat).push(it);
+    }
+    return Array.from(byCategory.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }
+
+  const itemLines = groupByCategory(items)
+    .map(([category, catItems]) => {
+      const rows = catItems.map((it) => `  • ${it.name} × ${it.qty}`).join("\n");
+      return `${category}:\n${rows}`;
+    })
+    .join("\n\n");
   const returnerLine = returner?.name
     ? `Returning items: ${returner.name}${returner.phone ? ` (${returner.phone})` : ""}\n`
     : "";
