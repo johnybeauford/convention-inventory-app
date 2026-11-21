@@ -51,8 +51,26 @@ export default async function handler(req, res) {
   const requesterName = requester.name || "—";
   const requesterPhone = requester.phone || "—";
 
+  // Groups items by category (Stage, Audio, etc.) — same grouping used
+  // in the app's Orders page and pick/check-in screens — so this list
+  // reads the same way everywhere a requester or staff member sees it.
+  function groupByCategory(list) {
+    const byCategory = new Map();
+    for (const it of list) {
+      const cat = it.category || "Uncategorized";
+      if (!byCategory.has(cat)) byCategory.set(cat, []);
+      byCategory.get(cat).push(it);
+    }
+    return Array.from(byCategory.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }
+
   // --- Plain-text fallback ---
-  const itemLinesText = items.map((it) => `• ${it.name} × ${it.qty}`).join("\n");
+  const itemLinesText = groupByCategory(items)
+    .map(([category, catItems]) => {
+      const rows = catItems.map((it) => `  • ${it.name} × ${it.qty}`).join("\n");
+      return `${category}:\n${rows}`;
+    })
+    .join("\n\n");
   const text = `An order has been fully checked back in and is waiting on return review.
 
 Requester: ${requesterName}
@@ -71,7 +89,12 @@ CEPC-Lubbock Equipment Team
 `;
 
   // --- HTML version: same blended design as the other notify emails ---
-  const itemRowsHtml = items.map((it) => `✅ ${esc(it.name)} × ${esc(it.qty)}`).join("<br/>\n          ");
+  const itemRowsHtml = groupByCategory(items)
+    .map(([category, catItems]) => {
+      const rows = catItems.map((it) => `✅ ${esc(it.name)} × ${esc(it.qty)}`).join("<br/>\n          ");
+      return `<div style="font-size:11px; font-weight:800; text-transform:uppercase; color:#888; margin:10px 0 2px;">${esc(category)}</div>\n          ${rows}`;
+    })
+    .join("\n          ");
 
   const html = `<!DOCTYPE html>
 <html>
