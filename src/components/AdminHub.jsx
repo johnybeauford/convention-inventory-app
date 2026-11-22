@@ -50,6 +50,7 @@ export function AdminHub({
   onSetVolunteerPassword,
   onSaveReviewerIds,
   onUpdateOrder,
+  onResolveMissingItem,
   onAssignActionItem,
   onAddBreakfixProject,
   onUpdateBreakfixProject,
@@ -182,6 +183,7 @@ export function AdminHub({
           currentVolunteerName={currentVolunteer.name}
           isCurrentVolunteerAdmin={Boolean(currentVolunteer.permissions?.volunteers)}
           onUpdateOrder={onUpdateOrder}
+          onResolveMissingItem={onResolveMissingItem}
         />
       )}
       {activeSection === "returns" && (
