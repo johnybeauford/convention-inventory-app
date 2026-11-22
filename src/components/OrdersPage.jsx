@@ -1162,35 +1162,63 @@ function escapeHtml(value) {
 
 // Builds a complete, self-contained printable page for one order —
 // opened in its own browser tab by handlePrintOrder above. Kept as
-// plain HTML/CSS (not React) since it's a wholly separate document,
-// grouped by category the same way the on-screen card is, with its own
-// visible "Print / Save as PDF" button plus an attempt to open the
-// print dialog automatically as soon as the tab finishes loading.
+// plain HTML/CSS (not React) since it's a wholly separate document.
+// Each category (Stage, Audio, Signage, etc.) gets its own sheet of
+// paper — a hard page break after every category except the last —
+// with the requester/event header repeated at the top of every sheet,
+// so if a department's page gets handed off or separated from the
+// rest, whoever's holding it can still tell whose order it is and
+// what it's for. Has its own visible "Print / Save as PDF" button
+// plus an attempt to open the print dialog automatically as soon as
+// the tab finishes loading.
 function buildOrderPrintHtml(order) {
-  const rows = groupByCategory(order.lineItems)
-    .map((group) => {
-      const itemRows = group.items
-        .map(
-          (li) => `
+  const groups = groupByCategory(order.lineItems);
+
+  const headerHtml = `
+  <h2>${escapeHtml(order.requesterName || "Unnamed requester")}</h2>
+  <p class="meta">
+    ${escapeHtml(order.requesterPhone || "—")}${order.requesterEmail ? ` · ${escapeHtml(order.requesterEmail)}` : ""}<br/>
+    ${escapeHtml(order.circuit || "—")} · ${escapeHtml(order.eventType || "—")} · Event ${escapeHtml(
+    order.eventDate || "—"
+  )} · Pickup ${escapeHtml(order.pickupDate || "—")} · Return ${escapeHtml(order.returnDate || "—")}
+  </p>
+  ${
+    order.hasReturner
+      ? `<p class="meta"><strong>Returning:</strong> ${escapeHtml(order.returnerName || "—")}${
+          order.returnerPhone ? ` · ${escapeHtml(order.returnerPhone)}` : ""
+        }${order.returnerEmail ? ` · ${escapeHtml(order.returnerEmail)}` : ""}${
+          order.returnerCircuit ? ` · ${escapeHtml(order.returnerCircuit)}` : ""
+        }</p>`
+      : ""
+  }
+  ${order.notes ? `<p class="meta"><strong>Notes:</strong> ${escapeHtml(order.notes)}</p>` : ""}`;
+
+  const pageGroups = groups.length > 0 ? groups : [{ category: "Items", items: [] }];
+
+  const sheetsHtml = pageGroups
+    .map((group, idx) => {
+      const itemRows =
+        group.items
+          .map(
+            (li) => `
           <tr>
             <td>${escapeHtml(li.name)}${!li.exists ? " (item no longer in catalog)" : ""}</td>
             <td class="qty">${escapeHtml(li.qty)}</td>
           </tr>`
-        )
-        .join("");
+          )
+          .join("") || `<tr><td colspan="2">(none)</td></tr>`;
+      const isLast = idx === pageGroups.length - 1;
       return `
-          <tr><td colspan="2" class="dept">${escapeHtml(group.category)}</td></tr>${itemRows}`;
+  <div class="sheet${isLast ? "" : " page-break"}">
+    ${headerHtml}
+    <div class="dept">${escapeHtml(group.category)}</div>
+    <table>
+      <thead><tr><th>Item</th><th class="qty">Requested</th></tr></thead>
+      <tbody>${itemRows}</tbody>
+    </table>
+  </div>`;
     })
     .join("");
-
-  const returnerBlock = order.hasReturner
-    ? `<p class="meta"><strong>Returning:</strong> ${escapeHtml(order.returnerName || "—")}${
-        order.returnerPhone ? ` · ${escapeHtml(order.returnerPhone)}` : ""
-      }${order.returnerEmail ? ` · ${escapeHtml(order.returnerEmail)}` : ""}${
-        order.returnerCircuit ? ` · ${escapeHtml(order.returnerCircuit)}` : ""
-      }</p>`
-    : "";
-  const notesBlock = order.notes ? `<p class="meta"><strong>Notes:</strong> ${escapeHtml(order.notes)}</p>` : "";
 
   return `<!doctype html>
 <html>
@@ -1204,27 +1232,16 @@ function buildOrderPrintHtml(order) {
   table { width: 100%; border-collapse: collapse; margin-top: 16px; }
   th, td { border: 1px solid #999; padding: 6px 8px; text-align: left; font-size: 13px; }
   td.qty { text-align: center; font-weight: 700; width: 90px; }
-  td.dept { font-weight: 800; text-transform: uppercase; font-size: 11px; color: #888; border: none; padding-top: 14px; }
+  .dept { font-weight: 800; text-transform: uppercase; font-size: 13px; color: #0072CE; margin-top: 18px; }
   .printbar { margin-bottom: 16px; }
   .printbar button { font-size: 14px; font-weight: 700; padding: 10px 18px; border-radius: 8px; border: none; background: #0072CE; color: #fff; cursor: pointer; }
+  .page-break { page-break-after: always; break-after: page; }
   @media print { .printbar { display: none; } }
 </style>
 </head>
 <body>
   <div class="printbar"><button onclick="window.print()">Print / Save as PDF</button></div>
-  <h2>${escapeHtml(order.requesterName || "Unnamed requester")}</h2>
-  <p class="meta">
-    ${escapeHtml(order.requesterPhone || "—")}${order.requesterEmail ? ` · ${escapeHtml(order.requesterEmail)}` : ""}<br/>
-    ${escapeHtml(order.circuit || "—")} · ${escapeHtml(order.eventType || "—")} · Event ${escapeHtml(
-    order.eventDate || "—"
-  )} · Pickup ${escapeHtml(order.pickupDate || "—")} · Return ${escapeHtml(order.returnDate || "—")}
-  </p>
-  ${returnerBlock}
-  ${notesBlock}
-  <table>
-    <thead><tr><th>Item</th><th class="qty">Requested</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>
+  ${sheetsHtml}
   <script>
     window.addEventListener("load", function () {
       try { window.print(); } catch (e) {}
