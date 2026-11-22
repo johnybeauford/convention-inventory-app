@@ -591,6 +591,58 @@ export default function App() {
     }
   }
 
+  // Staff-side (reviewer/admin): records how a "can't find" report on
+  // an order's Gathering Checklist was resolved — either a substitute
+  // item, or telling the requester that item won't be available — and
+  // emails the requester with that update. The checklist item itself
+  // stays as the filler left it (unchecked); marking it "resolved"
+  // here is what lets Mark Ready proceed without that box being
+  // ticked, since staff have already handled it another way.
+  async function handleResolveMissingItem(order, itemName, resolution, resolvedByName) {
+    const existing = order.missingItems || {};
+    const entry = existing[itemName] || {};
+    const updatedMissingItems = {
+      ...existing,
+      [itemName]: {
+        ...entry,
+        resolved: true,
+        resolution: resolution.type,
+        substituteName: resolution.substituteName || "",
+        resolutionNote: resolution.note || "",
+        resolvedBy: resolvedByName || "",
+        resolvedAtMs: Date.now(),
+      },
+    };
+    await updateOrder(order.id, { missingItems: updatedMissingItems });
+
+    if (!order.requesterEmail) return { ok: true, skipped: "no-email" };
+    const lineItem = (order.items || []).find((li) => li.name === itemName);
+    try {
+      const res = await fetch("/api/notify-item-issue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requesterEmail: order.requesterEmail,
+          requester: { name: order.requesterName, phone: order.requesterPhone },
+          itemName,
+          qty: lineItem?.qty || "",
+          resolutionType: resolution.type,
+          substituteName: resolution.substituteName || "",
+          note: resolution.note || "",
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.error("notify-item-issue failed:", res.status, data);
+        return { ok: false };
+      }
+      return { ok: true, skipped: data.skipped };
+    } catch (err) {
+      console.error("notify-item-issue request failed:", err);
+      return { ok: false };
+    }
+  }
+
   // Staff-side: resends the original "your request has been submitted"
   // confirmation — to the requester, the returner, or both (whichever
   // the volunteer picks), plus any additional recipients typed in.
@@ -1026,6 +1078,7 @@ export default function App() {
             onSetVolunteerPassword={setVolunteerPassword}
             onSaveReviewerIds={saveReviewerIds}
             onUpdateOrder={updateOrder}
+            onResolveMissingItem={handleResolveMissingItem}
             onAssignActionItem={handleAssignActionItem}
             onAddBreakfixProject={addBreakfixProject}
             onUpdateBreakfixProject={updateBreakfixProject}
