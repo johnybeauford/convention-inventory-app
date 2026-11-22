@@ -1,5 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { flushSync } from "react-dom";
+import React, { useMemo, useState } from "react";
 import { S } from "../styles";
 import { EditOrderModal } from "./EditOrderModal";
 import { Lightbox } from "./Lightbox";
@@ -31,6 +30,16 @@ function groupByCategory(lineItems) {
     .map(([category, catItems]) => ({ category, items: catItems }));
 }
 
+const missingActionBtnStyle = {
+  background: "#fff",
+  border: "1px solid #ccc",
+  borderRadius: 6,
+  fontSize: 12,
+  fontWeight: 700,
+  padding: "6px 10px",
+  cursor: "pointer",
+};
+
 export function OrdersPage({
   orders,
   drafts,
@@ -51,6 +60,7 @@ export function OrdersPage({
   currentVolunteerName,
   isCurrentVolunteerAdmin,
   onUpdateOrder,
+  onResolveMissingItem,
 }) {
   const [search, setSearch] = useState("");
   const [editingOrder, setEditingOrder] = useState(null);
@@ -159,6 +169,7 @@ export function OrdersPage({
           onArchiveOrder={onArchiveOrder}
           onMoveBackToPicking={onMoveBackToPicking}
           onUpdateOrder={onUpdateOrder}
+          onResolveMissingItem={onResolveMissingItem}
           onEditOrder={() => setEditingOrder(order)}
           volunteers={volunteers}
         />
@@ -203,29 +214,11 @@ export function OrdersPage({
         />
       )}
 
-      <style>{`
-        @media print {
-          body.order-printing-scoped * { visibility: hidden; }
-          body.order-printing-scoped .order-print-active,
-          body.order-printing-scoped .order-print-active * { visibility: visible; }
-          body.order-printing-scoped .order-print-active {
-            display: block !important;
-            position: absolute;
-            left: 0;
-            top: 0;
-            width: 100%;
-          }
-          .order-print-table th, .order-print-table td {
-            border: 1px solid #999;
-            padding: 6px 8px;
-          }
-        }
-      `}</style>
     </div>
   );
 }
 
-function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVolunteerName, canCancel, isCurrentVolunteerAdmin, onMarkReady, onAssignFillers, onResendFillerNotice, onResendReadyEmail, onResendSubmittedEmail, onCancelOrder, onArchiveOrder, onMoveBackToPicking, onUpdateOrder, onEditOrder }) {
+function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVolunteerName, canCancel, isCurrentVolunteerAdmin, onMarkReady, onAssignFillers, onResendFillerNotice, onResendReadyEmail, onResendSubmittedEmail, onCancelOrder, onArchiveOrder, onMoveBackToPicking, onUpdateOrder, onResolveMissingItem, onEditOrder }) {
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [archiving, setArchiving] = useState(false);
@@ -233,29 +226,26 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
   const [resendReadyFlash, setResendReadyFlash] = useState(null); // { text, tone: "ok" | "error" } | null
   const [checklistLightbox, setChecklistLightbox] = useState(null); // { src, name } | null
 
-  const [printing, setPrinting] = useState(false);
-
-  useEffect(() => {
-    function handleAfterPrint() {
-      document.body.classList.remove("order-printing-scoped");
-      setPrinting(false);
-    }
-    window.addEventListener("afterprint", handleAfterPrint);
-    return () => window.removeEventListener("afterprint", handleAfterPrint);
-  }, []);
-
-  // Same scoped-print mechanism used on the Print Lists page: flushSync
-  // makes sure the print-only block is actually in the DOM before we
-  // call print(), so staff can grab a standalone copy of just this one
-  // order — handy to keep on file, hand off, or print for someone
-  // without app access.
+  // Opens a standalone printable copy of just this order in a new tab,
+  // instead of the old same-page "scoped print" trick. That trick relied
+  // on window.print() firing inside this page itself, which iOS Safari
+  // silently refuses to do at all when the app is running as an
+  // installed/home-screen app (no error, print() just does nothing) —
+  // this sidesteps that entirely by handing off to a plain browser tab,
+  // where printing and "Save as PDF" / sharing always work normally.
   function handlePrintOrder() {
-    flushSync(() => {
-      setPrinting(true);
-    });
-    document.body.classList.add("order-printing-scoped");
-    void document.body.offsetHeight;
-    window.print();
+    const html = buildOrderPrintHtml(order);
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, "_blank");
+    if (!win) {
+      window.alert(
+        "Your browser blocked opening the printable order in a new tab. Please allow pop-ups for this site and try again."
+      );
+    }
+    // Give the new tab a little time to actually load the blob before
+    // releasing it — it's only ever referenced once, right at open.
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
 
   const [submittedResendOpen, setSubmittedResendOpen] = useState(false);
@@ -283,15 +273,89 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
   const pickingChecklist = order.pickingChecklist || {};
   const gatheredCount = order.lineItems.filter((li) => pickingChecklist[li.name]).length;
   const totalCount = order.lineItems.length;
-  // An order with no line items at all (shouldn't normally happen, but
-  // isn't something to get stuck on) counts as fully gathered so Mark
-  // Ready isn't permanently blocked for it.
-  const allGathered = totalCount === 0 || gatheredCount === totalCount;
   const canToggleGathered =
     (order.assignedFillers || []).includes(currentVolunteerName) || Boolean(isCurrentVolunteerAdmin);
+
+  // "Can't Find" reports — saved on the order itself (missingItems,
+  // keyed by item name) same as pickingChecklist, so they're shared
+  // live across everyone viewing this order. A filler reports one with
+  // a required reason; it then shows up for whoever reviewed this
+  // order (or any admin) to resolve as either a substitution or a
+  // "not available" notice — either way the requester gets an email
+  // once it's resolved. Checking an item's box always means it was
+  // found, so that clears any open "can't find" report for it.
+  const missingItems = order.missingItems || {};
+  const unresolvedMissing = order.lineItems.filter((li) => missingItems[li.name] && !missingItems[li.name].resolved);
+  // An order with no line items at all (shouldn't normally happen, but
+  // isn't something to get stuck on) counts as fully gathered so Mark
+  // Ready isn't permanently blocked for it. An item that's been
+  // resolved (substituted, or confirmed unavailable) no longer needs
+  // its box checked to count as handled.
+  const allGathered =
+    totalCount === 0 ||
+    order.lineItems.every((li) => pickingChecklist[li.name] || missingItems[li.name]?.resolved);
+
   function toggleGathered(name) {
     if (!canToggleGathered) return;
-    onUpdateOrder(order.id, { pickingChecklist: { ...pickingChecklist, [name]: !pickingChecklist[name] } });
+    const nextChecked = !pickingChecklist[name];
+    const nextMissing = { ...missingItems };
+    if (nextChecked) delete nextMissing[name];
+    onUpdateOrder(order.id, {
+      pickingChecklist: { ...pickingChecklist, [name]: nextChecked },
+      missingItems: nextMissing,
+    });
+  }
+
+  function reportMissing(name) {
+    if (!canToggleGathered) return;
+    const reason = window.prompt(`Why can't you find "${name}"? This note goes to whoever reviewed this order.`);
+    if (reason === null) return; // cancelled
+    onUpdateOrder(order.id, {
+      pickingChecklist: { ...pickingChecklist, [name]: false },
+      missingItems: {
+        ...missingItems,
+        [name]: {
+          reason: reason.trim() || "No reason given",
+          reportedBy: currentVolunteerName,
+          reportedAtMs: Date.now(),
+          resolved: false,
+        },
+      },
+    });
+  }
+
+  const canResolveMissing = (reviewerNames || []).includes(currentVolunteerName) || Boolean(isCurrentVolunteerAdmin);
+
+  // Either the filler who could toggle the checkbox, or a reviewer/admin
+  // resolving it, can undo a mistaken "can't find" report.
+  function undoMissing(name) {
+    if (!canToggleGathered && !canResolveMissing) return;
+    const nextMissing = { ...missingItems };
+    delete nextMissing[name];
+    onUpdateOrder(order.id, { missingItems: nextMissing });
+  }
+
+  const [resolvingName, setResolvingName] = useState(null);
+
+  async function handleSubstitute(name) {
+    const substituteName = window.prompt(`What are you substituting for "${name}"?`);
+    if (substituteName === null || !substituteName.trim()) return;
+    setResolvingName(name);
+    try {
+      await onResolveMissingItem(order, name, { type: "substitute", substituteName: substituteName.trim() }, currentVolunteerName);
+    } finally {
+      setResolvingName(null);
+    }
+  }
+
+  async function handleUnavailable(name) {
+    if (!window.confirm(`Let ${order.requesterName || "the requester"} know "${name}" isn't available? This will email them.`)) return;
+    setResolvingName(name);
+    try {
+      await onResolveMissingItem(order, name, { type: "unavailable" }, currentVolunteerName);
+    } finally {
+      setResolvingName(null);
+    }
   }
 
   const [movingBack, setMovingBack] = useState(false);
@@ -646,17 +710,78 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
           </div>
           {renderResendBlock()}
 
+          {/* "Can't Find" reports needing a decision — shown to whoever
+              reviewed this order, or any admin, so they can resolve it
+              (substitute, or tell the requester it's unavailable)
+              before Mark Ready can be used. */}
+          {unresolvedMissing.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: "#c0392b", marginBottom: 4 }}>
+                Items Needing Attention ({unresolvedMissing.length})
+              </div>
+              {!canResolveMissing && (
+                <div style={{ ...S.tinyMuted, fontSize: 11, marginBottom: 4 }}>
+                  Waiting on {reviewerNames.length ? reviewerNames.join(" or ") : "a reviewer"} (or an admin) to resolve
+                  {unresolvedMissing.length === 1 ? " this." : " these."}
+                </div>
+              )}
+              {unresolvedMissing.map((li) => {
+                const missing = missingItems[li.name];
+                const resolving = resolvingName === li.name;
+                return (
+                  <div
+                    key={li.name}
+                    style={{ background: "#fdecea", border: "1px solid #f5c6c0", borderRadius: 8, padding: "10px 12px", marginBottom: 8 }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: 13, color: "#1a1a2e" }}>
+                      {li.name} <span style={{ fontWeight: 400, color: "#777" }}>× {li.qty}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#555", marginTop: 2 }}>
+                      Reported by {missing.reportedBy || "a volunteer"}: "{missing.reason}"
+                    </div>
+                    {canResolveMissing && (
+                      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                        <button
+                          style={{ ...missingActionBtnStyle, color: "#1a1a2e", borderColor: "#d8dde3" }}
+                          disabled={resolving}
+                          onClick={() => handleSubstitute(li.name)}
+                        >
+                          {resolving ? "Working…" : "Substitute Item"}
+                        </button>
+                        <button
+                          style={{ ...missingActionBtnStyle, color: "#c0392b", borderColor: "#f5c6c0" }}
+                          disabled={resolving}
+                          onClick={() => handleUnavailable(li.name)}
+                        >
+                          {resolving ? "Working…" : "Not Available — Notify Requester"}
+                        </button>
+                        <button
+                          style={{ ...missingActionBtnStyle, color: "#777", borderColor: "#d8dde3" }}
+                          disabled={resolving}
+                          onClick={() => undoMissing(li.name)}
+                        >
+                          Undo Report
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {/* Digital gathering checklist — only the volunteer(s) this
               order is assigned to, or a full admin, can check items off
-              as they're physically gathered (see canToggleGathered
-              above); anyone else with Orders access can still see it
-              and its progress, read-only. Saved on the order itself
-              (pickingChecklist, keyed by item name) so progress is
+              as they're physically gathered, or report one as a
+              "can't find" (see canToggleGathered above); anyone else
+              with Orders access can still see it and its progress,
+              read-only. Saved on the order itself (pickingChecklist +
+              missingItems, both keyed by item name) so progress is
               shared live across everyone looking at this order, same
               as the review/assignment steps above, and survives a
-              page refresh or switching devices. Purely a helper —
-              it doesn't gate Mark Ready, since staff may still want to
-              mark an order ready without using the checklist. */}
+              page refresh or switching devices. Gates Mark Ready: every
+              item must be either checked off or have its "can't find"
+              report resolved. */}
           <div style={{ marginTop: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
               <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", color: "#888" }}>
@@ -679,6 +804,7 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
                   </div>
                   {group.items.map((li, idx) => {
                     const checked = Boolean(pickingChecklist[li.name]);
+                    const missing = missingItems[li.name];
                     return (
                       <div key={idx} style={{ ...S.summaryRow, alignItems: "center", gap: 8 }}>
                         {li.thumbnail ? (
@@ -728,6 +854,36 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
                             {li.name}
                           </span>
                         </label>
+                        {!checked &&
+                          (missing ? (
+                            missing.resolved ? (
+                              <span style={{ fontSize: 11, fontWeight: 700, color: "#2471a3", whiteSpace: "nowrap" }}>
+                                {missing.resolution === "substitute" ? `Substituted: ${missing.substituteName}` : "Marked Unavailable"}
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: 11, fontWeight: 700, color: "#c0392b", whiteSpace: "nowrap" }}>Can't Find Reported</span>
+                            )
+                          ) : (
+                            canToggleGathered && (
+                              <button
+                                type="button"
+                                onClick={() => reportMissing(li.name)}
+                                style={{
+                                  background: "none",
+                                  border: "1px solid #e0a39c",
+                                  color: "#c0392b",
+                                  borderRadius: 6,
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                  padding: "3px 8px",
+                                  cursor: "pointer",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                Can't Find
+                              </button>
+                            )
+                          ))}
                         <span style={S.summaryQty}>×{li.qty}</span>
                       </div>
                     );
@@ -757,7 +913,9 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
           </button>
           {!allGathered && (
             <div style={{ ...S.tinyMuted, fontSize: 11, marginTop: 6 }}>
-              Check off every item on the Gathering Checklist above before marking this order ready.
+              {unresolvedMissing.length > 0
+                ? "Resolve the item(s) needing attention above before marking this order ready."
+                : "Check off every item on the Gathering Checklist above before marking this order ready."}
             </div>
           )}
         </div>
@@ -823,62 +981,6 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
             Only the reviewer or an admin can cancel or archive this order.
           </span>
         )}
-      </div>
-
-      {/* Standalone printable copy of just this order — hidden on
-          screen, only rendered into the print output when this card's
-          own Print/Download button was the one clicked (see the
-          body.order-printing-scoped rules at the bottom of the page). */}
-      <div className={"order-print-block" + (printing ? " order-print-active" : "")} style={{ display: "none" }}>
-        <h2 style={{ marginBottom: 4 }}>{order.requesterName || "Unnamed requester"}</h2>
-        <p style={{ fontSize: 12, color: "#666", marginTop: 0 }}>
-          {order.requesterPhone || "—"}
-          {order.requesterEmail ? ` · ${order.requesterEmail}` : ""}
-          <br />
-          {order.circuit || "—"} · {order.eventType || "—"} · Event {order.eventDate || "—"} · Pickup{" "}
-          {order.pickupDate || "—"} · Return {order.returnDate || "—"}
-        </p>
-        {order.hasReturner && (
-          <p style={{ fontSize: 12, color: "#666", marginTop: 0 }}>
-            <strong>Returning:</strong> {order.returnerName || "—"}
-            {order.returnerPhone ? ` · ${order.returnerPhone}` : ""}
-            {order.returnerEmail ? ` · ${order.returnerEmail}` : ""}
-            {order.returnerCircuit ? ` · ${order.returnerCircuit}` : ""}
-          </p>
-        )}
-        {order.notes && (
-          <p style={{ fontSize: 12, color: "#666" }}>
-            <strong>Notes:</strong> {order.notes}
-          </p>
-        )}
-        <table className="order-print-table" style={printTableStyle}>
-          <thead>
-            <tr>
-              <th style={printThStyle}>Item</th>
-              <th style={{ ...printThStyle, width: 90, textAlign: "center" }}>Requested</th>
-            </tr>
-          </thead>
-          <tbody>
-            {groupByCategory(order.lineItems).map((group) => (
-              <React.Fragment key={group.category}>
-                <tr>
-                  <td colSpan={2} style={{ ...printTdStyle, fontWeight: 800, textTransform: "uppercase", fontSize: 11, color: "#888", border: "none", paddingTop: 10, paddingBottom: 2 }}>
-                    {group.category}
-                  </td>
-                </tr>
-                {group.items.map((li, idx) => (
-                  <tr key={idx}>
-                    <td style={printTdStyle}>
-                      {li.name}
-                      {!li.exists && " (item no longer in catalog)"}
-                    </td>
-                    <td style={{ ...printTdStyle, textAlign: "center", fontWeight: 700 }}>{li.qty}</td>
-                  </tr>
-                ))}
-              </React.Fragment>
-            ))}
-          </tbody>
-        </table>
       </div>
 
       {checklistLightbox && (
@@ -1032,27 +1134,89 @@ const cancelLinkStyle = {
   padding: 0,
 };
 
-const printTableStyle = {
-  width: "100%",
-  borderCollapse: "collapse",
-  marginTop: 10,
-  background: "#fff",
-  borderRadius: 8,
-  overflow: "hidden",
-};
+// Basic HTML-escaping for the standalone printable page below — a
+// requester name, note, or item containing &, <, or > should never
+// break that page's markup.
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[c]));
+}
 
-const printThStyle = {
-  textAlign: "left",
-  fontSize: 12,
-  textTransform: "uppercase",
-  color: "#999",
-  padding: "8px 10px",
-  borderBottom: "2px solid #eee",
-};
+// Builds a complete, self-contained printable page for one order —
+// opened in its own browser tab by handlePrintOrder above. Kept as
+// plain HTML/CSS (not React) since it's a wholly separate document,
+// grouped by category the same way the on-screen card is, with its own
+// visible "Print / Save as PDF" button plus an attempt to open the
+// print dialog automatically as soon as the tab finishes loading.
+function buildOrderPrintHtml(order) {
+  const rows = groupByCategory(order.lineItems)
+    .map((group) => {
+      const itemRows = group.items
+        .map(
+          (li) => `
+          <tr>
+            <td>${escapeHtml(li.name)}${!li.exists ? " (item no longer in catalog)" : ""}</td>
+            <td class="qty">${escapeHtml(li.qty)}</td>
+          </tr>`
+        )
+        .join("");
+      return `
+          <tr><td colspan="2" class="dept">${escapeHtml(group.category)}</td></tr>${itemRows}`;
+    })
+    .join("");
 
-const printTdStyle = {
-  fontSize: 13,
-  padding: "8px 10px",
-  borderBottom: "1px solid #eee",
-  color: "#1a1a2e",
-};
+  const returnerBlock = order.hasReturner
+    ? `<p class="meta"><strong>Returning:</strong> ${escapeHtml(order.returnerName || "—")}${
+        order.returnerPhone ? ` · ${escapeHtml(order.returnerPhone)}` : ""
+      }${order.returnerEmail ? ` · ${escapeHtml(order.returnerEmail)}` : ""}${
+        order.returnerCircuit ? ` · ${escapeHtml(order.returnerCircuit)}` : ""
+      }</p>`
+    : "";
+  const notesBlock = order.notes ? `<p class="meta"><strong>Notes:</strong> ${escapeHtml(order.notes)}</p>` : "";
+
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Order — ${escapeHtml(order.requesterName || "Unnamed requester")}</title>
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; color: #1a1a2e; padding: 24px; max-width: 700px; margin: 0 auto; }
+  h2 { margin-bottom: 4px; }
+  .meta { font-size: 12px; color: #666; margin-top: 0; }
+  table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+  th, td { border: 1px solid #999; padding: 6px 8px; text-align: left; font-size: 13px; }
+  td.qty { text-align: center; font-weight: 700; width: 90px; }
+  td.dept { font-weight: 800; text-transform: uppercase; font-size: 11px; color: #888; border: none; padding-top: 14px; }
+  .printbar { margin-bottom: 16px; }
+  .printbar button { font-size: 14px; font-weight: 700; padding: 10px 18px; border-radius: 8px; border: none; background: #0072CE; color: #fff; cursor: pointer; }
+  @media print { .printbar { display: none; } }
+</style>
+</head>
+<body>
+  <div class="printbar"><button onclick="window.print()">Print / Save as PDF</button></div>
+  <h2>${escapeHtml(order.requesterName || "Unnamed requester")}</h2>
+  <p class="meta">
+    ${escapeHtml(order.requesterPhone || "—")}${order.requesterEmail ? ` · ${escapeHtml(order.requesterEmail)}` : ""}<br/>
+    ${escapeHtml(order.circuit || "—")} · ${escapeHtml(order.eventType || "—")} · Event ${escapeHtml(
+    order.eventDate || "—"
+  )} · Pickup ${escapeHtml(order.pickupDate || "—")} · Return ${escapeHtml(order.returnDate || "—")}
+  </p>
+  ${returnerBlock}
+  ${notesBlock}
+  <table>
+    <thead><tr><th>Item</th><th class="qty">Requested</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <script>
+    window.addEventListener("load", function () {
+      try { window.print(); } catch (e) {}
+    });
+  </script>
+</body>
+</html>`;
+}
