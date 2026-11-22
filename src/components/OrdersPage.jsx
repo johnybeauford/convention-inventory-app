@@ -834,26 +834,39 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
                             No photo
                           </div>
                         )}
-                        <label
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            flex: 1,
-                            cursor: canToggleGathered ? "pointer" : "default",
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={!canToggleGathered}
-                            onChange={() => toggleGathered(li.name)}
-                            style={{ width: 16, height: 16, flexShrink: 0 }}
-                          />
-                          <span style={{ flex: 1, textDecoration: checked ? "line-through" : "none", color: checked ? "#999" : "inherit" }}>
-                            {li.name}
-                          </span>
-                        </label>
+                        {missing ? (
+                          // Once a "can't find" has been reported, the
+                          // checkbox itself is hidden rather than just
+                          // left checkable — checking it would silently
+                          // wipe out the report and its notes (see
+                          // toggleGathered), so there's nothing here
+                          // that can clear it by an accidental tap.
+                          // Undoing a report is a deliberate action,
+                          // done from the "Undo Report" button in Items
+                          // Needing Attention above, not this checkbox.
+                          <span style={{ flex: 1, color: "#999" }}>{li.name}</span>
+                        ) : (
+                          <label
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              flex: 1,
+                              cursor: canToggleGathered ? "pointer" : "default",
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={!canToggleGathered}
+                              onChange={() => toggleGathered(li.name)}
+                              style={{ width: 16, height: 16, flexShrink: 0 }}
+                            />
+                            <span style={{ flex: 1, textDecoration: checked ? "line-through" : "none", color: checked ? "#999" : "inherit" }}>
+                              {li.name}
+                            </span>
+                          </label>
+                        )}
                         {!checked &&
                           (missing ? (
                             missing.resolved ? (
