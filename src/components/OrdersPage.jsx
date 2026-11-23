@@ -1241,14 +1241,16 @@ function buildOrderPrintHtml(order) {
   th, td { border: 1px solid #999; padding: 6px 8px; text-align: left; font-size: 13px; }
   td.qty { text-align: center; font-weight: 700; width: 90px; }
   .dept { font-weight: 800; text-transform: uppercase; font-size: 13px; color: #0072CE; margin-top: 18px; }
-  .printbar { margin-bottom: 16px; }
+  .printbar { margin-bottom: 8px; }
   .printbar button { font-size: 14px; font-weight: 700; padding: 10px 18px; border-radius: 8px; border: none; background: #0072CE; color: #fff; cursor: pointer; }
+  .printbar-hint { font-size: 12px; color: #888; margin: 0 0 16px; }
   .page-break { page-break-after: always; break-after: page; }
-  @media print { .printbar { display: none; } }
+  @media print { .printbar, .printbar-hint { display: none; } }
 </style>
 </head>
 <body>
   <div class="printbar"><button onclick="window.print()">Print / Save as PDF</button></div>
+  <p class="printbar-hint">On iPhone/iPad, if that button doesn't open anything, tap the Share icon in your browser's toolbar instead and choose "Print" (or "Save to Files" to get a PDF) — that always works, even when the button above doesn't.</p>
   ${sheetsHtml}
   <script>
     window.addEventListener("load", function () {
