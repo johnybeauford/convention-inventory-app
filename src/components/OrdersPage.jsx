@@ -230,22 +230,30 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
   // instead of the old same-page "scoped print" trick. That trick relied
   // on window.print() firing inside this page itself, which iOS Safari
   // silently refuses to do at all when the app is running as an
-  // installed/home-screen app (no error, print() just does nothing) —
-  // this sidesteps that entirely by handing off to a plain browser tab,
-  // where printing and "Save as PDF" / sharing always work normally.
+  // installed/home-screen app (no error, print() just does nothing).
+  //
+  // The new tab is opened blank first, then filled in with
+  // document.write — rather than pointing it at a blob: URL. A blob:
+  // URL gets treated by some mobile browsers (notably when the app is
+  // opening it from installed/home-screen mode) as its own opaque,
+  // locked-down origin, where window.print() silently no-ops again —
+  // same symptom, different cause. Writing the HTML directly into an
+  // about:blank window the opener controls keeps it in a normal,
+  // unsandboxed context, so both the automatic print-on-load script
+  // inside the page and its visible "Print / Save as PDF" button work
+  // the same way printing from any regular page would.
   function handlePrintOrder() {
-    const html = buildOrderPrintHtml(order);
-    const blob = new Blob([html], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    const win = window.open(url, "_blank");
+    const win = window.open("", "_blank");
     if (!win) {
       window.alert(
         "Your browser blocked opening the printable order in a new tab. Please allow pop-ups for this site and try again."
       );
+      return;
     }
-    // Give the new tab a little time to actually load the blob before
-    // releasing it — it's only ever referenced once, right at open.
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    const html = buildOrderPrintHtml(order);
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
   }
 
   const [submittedResendOpen, setSubmittedResendOpen] = useState(false);
