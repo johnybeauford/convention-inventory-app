@@ -1292,11 +1292,22 @@ function pdfLayoutPages(order) {
     do {
       const ops = [];
       let y = PDF_MARGIN_TOP;
-      for (const hl of headerLines) {
-        ops.push({ type: "text", x: PDF_MARGIN_L, y, text: hl.text, font: hl.font, size: hl.size, gray: hl.gray });
-        y -= hl.size + 5;
+      // The requester's name, contact info, and notes are only useful
+      // once — they go on the very first page of the whole order. Every
+      // other page (a later category, or a continuation of a long one)
+      // just gets the event date, in bold, so whoever's holding that
+      // one sheet can still tell which event it's for without needing
+      // the full header repeated every time.
+      if (pages.length === 0) {
+        for (const hl of headerLines) {
+          ops.push({ type: "text", x: PDF_MARGIN_L, y, text: hl.text, font: hl.font, size: hl.size, gray: hl.gray });
+          y -= hl.size + 5;
+        }
+        y -= 8;
+      } else {
+        ops.push({ type: "text", x: PDF_MARGIN_L, y, text: `Event: ${order.eventDate || "-"}`, font: "F2", size: 13 });
+        y -= 13 + 13;
       }
-      y -= 8;
 
       const catTitle = group.category.toUpperCase() + (isFirstPageOfCategory ? "" : " (CONTINUED)");
       ops.push({ type: "text", x: PDF_MARGIN_L, y, text: catTitle, font: "F2", size: 11, blue: true });
