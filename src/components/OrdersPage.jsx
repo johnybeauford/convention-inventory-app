@@ -226,34 +226,54 @@ function OrderCard({ order, volunteerNames, volunteers, reviewerNames, currentVo
   const [resendReadyFlash, setResendReadyFlash] = useState(null); // { text, tone: "ok" | "error" } | null
   const [checklistLightbox, setChecklistLightbox] = useState(null); // { src, name } | null
 
-  // Opens a standalone printable copy of just this order in a new tab,
-  // instead of the old same-page "scoped print" trick. That trick relied
-  // on window.print() firing inside this page itself, which iOS Safari
-  // silently refuses to do at all when the app is running as an
-  // installed/home-screen app (no error, print() just does nothing).
+  // Builds a real PDF of this order (see buildOrderPrintPdfBytes below)
+  // and hands it straight to the device's native share sheet — rather
+  // than opening our own page with a "Print" button on it and relying
+  // on window.print() to fire. That approach went through two
+  // iterations (a same-page print, then a new-tab print) and both
+  // ran into some form of iOS silently refusing to trigger printing
+  // from script — first in installed/home-screen mode, then again
+  // from a tab opened via window.open. Going straight to the OS share
+  // sheet with an actual PDF file sidesteps all of that: sharing a
+  // real file is a native platform feature, not something a webpage's
+  // JavaScript can get blocked from triggering, and "Print" is one of
+  // the share sheet's own built-in options for a PDF.
   //
-  // The new tab is opened blank first, then filled in with
-  // document.write — rather than pointing it at a blob: URL. A blob:
-  // URL gets treated by some mobile browsers (notably when the app is
-  // opening it from installed/home-screen mode) as its own opaque,
-  // locked-down origin, where window.print() silently no-ops again —
-  // same symptom, different cause. Writing the HTML directly into an
-  // about:blank window the opener controls keeps it in a normal,
-  // unsandboxed context, so both the automatic print-on-load script
-  // inside the page and its visible "Print / Save as PDF" button work
-  // the same way printing from any regular page would.
-  function handlePrintOrder() {
-    const win = window.open("", "_blank");
+  // Where the Web Share API (with file support) isn't available —
+  // most desktop browsers — this falls back to just opening the PDF
+  // in a new tab instead. Browsers render PDFs with their own native
+  // viewer there, which has its own Print/Share controls built in, so
+  // printing still works without depending on any print call of ours.
+  async function handlePrintOrder() {
+    const pdfBytes = buildOrderPrintPdfBytes(order);
+    const safeName = (order.requesterName || "Unnamed requester").replace(/[\\/:*?"<>|]/g, "");
+    const fileName = `Order - ${safeName}.pdf`;
+
+    if (typeof navigator.canShare === "function") {
+      try {
+        const file = new File([pdfBytes], fileName, { type: "application/pdf" });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: fileName });
+          return;
+        }
+      } catch (err) {
+        // The person backing out of the share sheet lands here too (an
+        // AbortError) — don't also pop open a new tab underneath it in
+        // that case. Anything else (a real failure) falls through to
+        // the new-tab fallback below instead of silently doing nothing.
+        if (err && err.name === "AbortError") return;
+      }
+    }
+
+    const blob = new Blob([pdfBytes], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, "_blank");
     if (!win) {
       window.alert(
-        "Your browser blocked opening the printable order in a new tab. Please allow pop-ups for this site and try again."
+        "Your browser blocked opening the printable order. Please allow pop-ups for this site and try again."
       );
-      return;
     }
-    const html = buildOrderPrintHtml(order);
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
 
   const [submittedResendOpen, setSubmittedResendOpen] = useState(false);
@@ -1155,108 +1175,238 @@ const cancelLinkStyle = {
   padding: 0,
 };
 
-// Basic HTML-escaping for the standalone printable page below — a
-// requester name, note, or item containing &, <, or > should never
-// break that page's markup.
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  }[c]));
+// --- Hand-rolled PDF generator for the printable order (no library) ---
+//
+// Builds a real, valid PDF file byte-for-byte, with one page per
+// category (continuing onto further pages if a single category has
+// too many items to fit on one) and the requester/event header
+// repeated at the top of every page — so if a department's page gets
+// handed off or separated from the rest, whoever's holding it can
+// still tell whose order it is and what it's for.
+//
+// Done as a plain PDF rather than an HTML "printable page" because
+// window.print() turned out to be unreliable from script on iOS in
+// more than one context (an installed/home-screen app, then a tab
+// opened via window.open) — see handlePrintOrder above. A real PDF
+// file sidesteps that family of problems entirely: it's handed
+// straight to the OS via the Web Share API (or, failing that, opened
+// directly — browsers render PDFs with their own built-in viewer,
+// which has its own native Print/Share controls that don't depend on
+// any JavaScript print call of ours).
+const PDF_PAGE_W = 612;
+const PDF_PAGE_H = 792;
+const PDF_MARGIN_L = 50;
+const PDF_MARGIN_R = 562;
+const PDF_MARGIN_TOP = 742;
+const PDF_MARGIN_BOTTOM = 50;
+const PDF_LINE_HEIGHT = 13;
+const PDF_ROW_FONT_SIZE = 9.5;
+
+// PDF's base-14 fonts only reliably cover plain ASCII without extra
+// setup (embedding a font just for a picking sheet is overkill), so
+// "smart" punctuation gets normalized to its plain equivalent and
+// anything else outside ASCII is dropped to a "?" rather than risk a
+// corrupted file.
+function pdfText(value) {
+  const normalized = String(value ?? "")
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, "-")
+    .replace(/[·•]/g, "-")
+    .replace(/…/g, "...");
+  let out = "";
+  for (const ch of normalized) {
+    out += ch.codePointAt(0) <= 127 ? ch : "?";
+  }
+  return out.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
 }
 
-// Builds a complete, self-contained printable page for one order —
-// opened in its own browser tab by handlePrintOrder above. Kept as
-// plain HTML/CSS (not React) since it's a wholly separate document.
-// Each category (Stage, Audio, Signage, etc.) gets its own sheet of
-// paper — a hard page break after every category except the last —
-// with the requester/event header repeated at the top of every sheet,
-// so if a department's page gets handed off or separated from the
-// rest, whoever's holding it can still tell whose order it is and
-// what it's for. Has its own visible "Print / Save as PDF" button
-// plus an attempt to open the print dialog automatically as soon as
-// the tab finishes loading.
-function buildOrderPrintHtml(order) {
-  const groups = groupByCategory(order.lineItems);
+// Rough Helvetica average-character-width estimate (as a fraction of
+// font size) — not pixel-perfect, but plenty for deciding where to
+// wrap a line or right-align a short quantity number.
+function pdfTextWidth(text, size, bold) {
+  return String(text).length * size * (bold ? 0.62 : 0.56);
+}
 
-  const headerHtml = `
-  <h2>${escapeHtml(order.requesterName || "Unnamed requester")}</h2>
-  <p class="meta">
-    ${escapeHtml(order.requesterPhone || "—")}${order.requesterEmail ? ` · ${escapeHtml(order.requesterEmail)}` : ""}<br/>
-    ${escapeHtml(order.circuit || "—")} · ${escapeHtml(order.eventType || "—")} · Event ${escapeHtml(
-    order.eventDate || "—"
-  )} · Pickup ${escapeHtml(order.pickupDate || "—")} · Return ${escapeHtml(order.returnDate || "—")}
-  </p>
-  ${
-    order.hasReturner
-      ? `<p class="meta"><strong>Returning:</strong> ${escapeHtml(order.returnerName || "—")}${
-          order.returnerPhone ? ` · ${escapeHtml(order.returnerPhone)}` : ""
-        }${order.returnerEmail ? ` · ${escapeHtml(order.returnerEmail)}` : ""}${
-          order.returnerCircuit ? ` · ${escapeHtml(order.returnerCircuit)}` : ""
-        }</p>`
-      : ""
+function pdfWrapText(text, maxWidthPt, fontSize) {
+  const maxChars = Math.max(10, Math.floor(maxWidthPt / (fontSize * 0.5)));
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length > maxChars && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
   }
-  ${order.notes ? `<p class="meta"><strong>Notes:</strong> ${escapeHtml(order.notes)}</p>` : ""}`;
+  if (current) lines.push(current);
+  return lines.length ? lines : [""];
+}
 
+function pdfBuildHeaderLines(order) {
+  const lines = [{ text: order.requesterName || "Unnamed requester", font: "F2", size: 14 }];
+  lines.push({
+    text: `${order.requesterPhone || "-"}${order.requesterEmail ? `  -  ${order.requesterEmail}` : ""}`,
+    font: "F1",
+    size: 9,
+    gray: true,
+  });
+  lines.push({
+    text: `${order.circuit || "-"}  -  ${order.eventType || "-"}  -  Event ${order.eventDate || "-"}  -  Pickup ${
+      order.pickupDate || "-"
+    }  -  Return ${order.returnDate || "-"}`,
+    font: "F1",
+    size: 9,
+    gray: true,
+  });
+  if (order.hasReturner) {
+    const returning = `Returning: ${order.returnerName || "-"}${
+      order.returnerPhone ? `  -  ${order.returnerPhone}` : ""
+    }${order.returnerEmail ? `  -  ${order.returnerEmail}` : ""}${
+      order.returnerCircuit ? `  -  ${order.returnerCircuit}` : ""
+    }`;
+    pdfWrapText(returning, PDF_MARGIN_R - PDF_MARGIN_L, 9).forEach((l) =>
+      lines.push({ text: l, font: "F1", size: 9, gray: true })
+    );
+  }
+  if (order.notes) {
+    pdfWrapText(`Notes: ${order.notes}`, PDF_MARGIN_R - PDF_MARGIN_L, 9).forEach((l) =>
+      lines.push({ text: l, font: "F1", size: 9, gray: true })
+    );
+  }
+  return lines;
+}
+
+function pdfLayoutPages(order) {
+  const groups = groupByCategory(order.lineItems);
   const pageGroups = groups.length > 0 ? groups : [{ category: "Items", items: [] }];
+  const headerLines = pdfBuildHeaderLines(order);
+  const pages = [];
 
-  const sheetsHtml = pageGroups
-    .map((group, idx) => {
-      const itemRows =
-        group.items
-          .map(
-            (li) => `
-          <tr>
-            <td>${escapeHtml(li.name)}${!li.exists ? " (item no longer in catalog)" : ""}</td>
-            <td class="qty">${escapeHtml(li.qty)}</td>
-          </tr>`
-          )
-          .join("") || `<tr><td colspan="2">(none)</td></tr>`;
-      const isLast = idx === pageGroups.length - 1;
-      return `
-  <div class="sheet${isLast ? "" : " page-break"}">
-    ${headerHtml}
-    <div class="dept">${escapeHtml(group.category)}</div>
-    <table>
-      <thead><tr><th>Item</th><th class="qty">Requested</th></tr></thead>
-      <tbody>${itemRows}</tbody>
-    </table>
-  </div>`;
-    })
-    .join("");
+  for (const group of pageGroups) {
+    let itemIdx = 0;
+    let isFirstPageOfCategory = true;
+    do {
+      const ops = [];
+      let y = PDF_MARGIN_TOP;
+      for (const hl of headerLines) {
+        ops.push({ type: "text", x: PDF_MARGIN_L, y, text: hl.text, font: hl.font, size: hl.size, gray: hl.gray });
+        y -= hl.size + 5;
+      }
+      y -= 8;
 
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<title>Order — ${escapeHtml(order.requesterName || "Unnamed requester")}</title>
-<style>
-  body { font-family: -apple-system, Helvetica, Arial, sans-serif; color: #1a1a2e; padding: 24px; max-width: 700px; margin: 0 auto; }
-  h2 { margin-bottom: 4px; }
-  .meta { font-size: 12px; color: #666; margin-top: 0; }
-  table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-  th, td { border: 1px solid #999; padding: 6px 8px; text-align: left; font-size: 13px; }
-  td.qty { text-align: center; font-weight: 700; width: 90px; }
-  .dept { font-weight: 800; text-transform: uppercase; font-size: 13px; color: #0072CE; margin-top: 18px; }
-  .printbar { margin-bottom: 8px; }
-  .printbar button { font-size: 14px; font-weight: 700; padding: 10px 18px; border-radius: 8px; border: none; background: #0072CE; color: #fff; cursor: pointer; }
-  .printbar-hint { font-size: 12px; color: #888; margin: 0 0 16px; }
-  .page-break { page-break-after: always; break-after: page; }
-  @media print { .printbar, .printbar-hint { display: none; } }
-</style>
-</head>
-<body>
-  <div class="printbar"><button onclick="window.print()">Print / Save as PDF</button></div>
-  <p class="printbar-hint">On iPhone/iPad, if that button doesn't open anything, tap the Share icon in your browser's toolbar instead and choose "Print" (or "Save to Files" to get a PDF) — that always works, even when the button above doesn't.</p>
-  ${sheetsHtml}
-  <script>
-    window.addEventListener("load", function () {
-      try { window.print(); } catch (e) {}
-    });
-  </script>
-</body>
-</html>`;
+      const catTitle = group.category.toUpperCase() + (isFirstPageOfCategory ? "" : " (CONTINUED)");
+      ops.push({ type: "text", x: PDF_MARGIN_L, y, text: catTitle, font: "F2", size: 11, blue: true });
+      y -= 18;
+
+      ops.push({ type: "text", x: PDF_MARGIN_L, y, text: "ITEM", font: "F2", size: 9 });
+      ops.push({ type: "text", x: 0, y, text: "QTY", font: "F2", size: 9, rightAlignTo: PDF_MARGIN_R, bold: true });
+      y -= 5;
+      ops.push({ type: "line", x1: PDF_MARGIN_L, y1: y, x2: PDF_MARGIN_R, y2: y });
+      y -= 13;
+
+      let itemsOnPage = 0;
+      if (group.items.length === 0) {
+        ops.push({ type: "text", x: PDF_MARGIN_L, y, text: "(none)", font: "F1", size: PDF_ROW_FONT_SIZE });
+        itemsOnPage = 1;
+      }
+
+      while (itemIdx < group.items.length) {
+        const li = group.items[itemIdx];
+        const label = li.name + (li.exists === false ? " (item no longer in catalog)" : "");
+        const wrapped = pdfWrapText(label, 440, PDF_ROW_FONT_SIZE);
+        const neededHeight = wrapped.length * PDF_LINE_HEIGHT;
+        if (itemsOnPage > 0 && y - neededHeight < PDF_MARGIN_BOTTOM) break;
+
+        wrapped.forEach((lineText, i) => {
+          ops.push({ type: "text", x: PDF_MARGIN_L, y, text: lineText, font: "F1", size: PDF_ROW_FONT_SIZE });
+          if (i === 0) {
+            ops.push({ type: "text", x: 0, y, text: String(li.qty), font: "F1", size: PDF_ROW_FONT_SIZE, rightAlignTo: PDF_MARGIN_R });
+          }
+          y -= PDF_LINE_HEIGHT;
+        });
+        itemIdx += 1;
+        itemsOnPage += 1;
+      }
+
+      pages.push(ops);
+      isFirstPageOfCategory = false;
+    } while (itemIdx < group.items.length);
+  }
+  return pages;
+}
+
+function pdfOpsToContentStream(ops) {
+  let body = "BT\n";
+  for (const op of ops) {
+    if (op.type !== "text") continue;
+    let x = op.x;
+    if (op.rightAlignTo != null) {
+      x = op.rightAlignTo - pdfTextWidth(op.text, op.size, op.bold);
+    }
+    if (op.blue) {
+      body += "0 0.447 0.808 rg\n";
+    } else if (op.gray) {
+      body += "0.4 g\n0.4 0.4 0.4 rg\n";
+    } else {
+      body += "0 g\n0 0 0 rg\n";
+    }
+    body += `/${op.font} ${op.size} Tf\n`;
+    body += `1 0 0 1 ${x.toFixed(2)} ${op.y.toFixed(2)} Tm\n`;
+    body += `(${pdfText(op.text)}) Tj\n`;
+  }
+  body += "ET\n";
+  for (const op of ops) {
+    if (op.type !== "line") continue;
+    body += `0.6 w\n0 G\n${op.x1.toFixed(2)} ${op.y1.toFixed(2)} m ${op.x2.toFixed(2)} ${op.y2.toFixed(2)} l S\n`;
+  }
+  return body;
+}
+
+// Assembles the final PDF file as raw bytes. Every character written
+// anywhere in the document (ASCII PDF syntax plus pdfText()-escaped
+// content) is guaranteed to be a single byte, so string length can be
+// used directly as the byte offset for the cross-reference table.
+function buildOrderPrintPdfBytes(order) {
+  const pages = pdfLayoutPages(order);
+  const pageContents = pages.map(pdfOpsToContentStream);
+
+  const firstPageObjNum = 5;
+  const pageObjNums = pageContents.map((_, i) => firstPageObjNum + i * 2);
+  const contentObjNums = pageContents.map((_, i) => firstPageObjNum + i * 2 + 1);
+
+  const objects = [
+    `1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n`,
+    `2 0 obj\n<< /Type /Pages /Kids [${pageObjNums.map((n) => `${n} 0 R`).join(" ")}] /Count ${pageContents.length} >>\nendobj\n`,
+    `3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n`,
+    `4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n`,
+  ];
+  pageContents.forEach((content, i) => {
+    objects.push(
+      `${pageObjNums[i]} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PDF_PAGE_W} ${PDF_PAGE_H}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${contentObjNums[i]} 0 R >>\nendobj\n`
+    );
+    objects.push(`${contentObjNums[i]} 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`);
+  });
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const obj of objects) {
+    offsets.push(pdf.length);
+    pdf += obj;
+  }
+  const xrefStart = pdf.length;
+  const totalObjs = objects.length + 1;
+  let xref = `xref\n0 ${totalObjs}\n0000000000 65535 f \n`;
+  for (let i = 1; i < totalObjs; i++) {
+    xref += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += xref;
+  pdf += `trailer\n<< /Size ${totalObjs} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+
+  const bytes = new Uint8Array(pdf.length);
+  for (let i = 0; i < pdf.length; i++) bytes[i] = pdf.charCodeAt(i) & 0xff;
+  return bytes;
 }
