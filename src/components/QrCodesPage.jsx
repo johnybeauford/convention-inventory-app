@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import QRCode from "qrcode";
 import { QRBox } from "./QRBox";
 import { Icon } from "./Icon";
 import { S, NAVY } from "../styles";
@@ -94,6 +95,396 @@ function printItemGroups(itemIds) {
   };
   window.addEventListener("afterprint", cleanup);
   window.print();
+}
+
+// ---------------------------------------------------------------
+// "Print on Label Sheets" — builds a real PDF laid out for pre-cut
+// adhesive label stock (the 2in x 2in, 20-per-sheet square label
+// sheets, 4 across x 5 down on an 8.5x11 sheet — the same standard
+// template family most vendors, including Premium Label Supply, use
+// for this size) and hands it to the OS share sheet, the same
+// Web-Share-API-first pattern already proven out for printing orders
+// in OrdersPage.jsx. No new npm dependency is added for this — the
+// PDF is hand-written raw PDF syntax, and the QR codes are rendered
+// with the same QRCode.toCanvas() already used on-screen by QRBox,
+// then re-used as a JPEG image embedded directly in the PDF.
+// ---------------------------------------------------------------
+const LABEL_PAGE_W = 612; // 8.5in @ 72pt/in
+const LABEL_PAGE_H = 792; // 11in
+const LABEL_QR_PIXELS = 300; // canvas render resolution, for a crisp scan at print size
+const LABEL_QR_SIZE_PT = 98; // QR footprint inside each 144x144pt (2in) cell
+const PDF_BRAND_COLOR_RGB = [0, 0.447, 0.808]; // ~#0072CE, same blue used everywhere else
+
+// Label-sheet formats, all 8.5x11 (Letter), all die-cut with no
+// gap between cells (consistent with how these standard templates are
+// usually laid out). "square2" is the one QR codes print on — a QR
+// code is itself a square, so it's the only shape guaranteed not to
+// get its corners clipped by a round die-cut. "round2" shares the
+// exact same 4x5 grid as "square2" (same per-sheet count and overall
+// sheet size strongly suggests the same manufacturer master grid,
+// just a different die shape over it). "round15" (30-per-sheet, 1.5in
+// circles) uses its own grid, sized from the vendor's stated label
+// size/count/sheet-size with even margins and no inter-cell gap, the
+// same reasoning already used for the other two — this one hasn't
+// been checked against an actual printed sheet, so it's worth running
+// one test page before committing to a full box of that stock.
+const LABEL_FORMATS = {
+  square2: {
+    id: "square2",
+    label: 'Square 2" (20/sheet)',
+    shape: "square",
+    allowQr: true,
+    cols: 4,
+    rows: 5,
+    cellW: 144,
+    cellH: 144,
+  },
+  round2: {
+    id: "round2",
+    label: 'Round 2" (20/sheet)',
+    shape: "circle",
+    allowQr: false,
+    cols: 4,
+    rows: 5,
+    cellW: 144,
+    cellH: 144,
+  },
+  round15: {
+    id: "round15",
+    label: 'Round 1.5" (30/sheet)',
+    shape: "circle",
+    allowQr: false,
+    cols: 5,
+    rows: 6,
+    cellW: 108,
+    cellH: 108,
+  },
+  // A big rectangular label (not square), e.g. for a department sign
+  // rather than a per-item code — text stickers only, same as the
+  // round formats, not because a rectangle would clip a QR code but
+  // because QR codes are meant to stay on the square 2x2 stock only.
+  rect4x5: {
+    id: "rect4x5",
+    label: '4"x5" (4/sheet)',
+    shape: "square",
+    allowQr: false,
+    cols: 2,
+    rows: 2,
+    cellW: 288, // 4in
+    cellH: 360, // 5in
+  },
+};
+// Derive each format's margins from its grid so the cells are always
+// centered on the sheet, rather than hand-maintaining margins that
+// could drift out of sync with cols/rows/cellW/cellH above.
+for (const fmt of Object.values(LABEL_FORMATS)) {
+  fmt.marginX = (LABEL_PAGE_W - fmt.cols * fmt.cellW) / 2;
+  fmt.marginY = (LABEL_PAGE_H - fmt.rows * fmt.cellH) / 2;
+  fmt.perSheet = fmt.cols * fmt.rows;
+}
+
+// PDF's base-14 fonts only reliably cover plain ASCII, so "smart"
+// punctuation is normalized and anything else outside ASCII is
+// dropped to "?" rather than risk a corrupted file. (Duplicated here,
+// rather than imported, so this file keeps generating its PDF the
+// same way OrdersPage.jsx does without the two files needing to share
+// a module — small helpers, cheap to keep in sync by inspection.)
+function labelPdfText(value) {
+  const normalized = String(value ?? "")
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, "-")
+    .replace(/[·•]/g, "-")
+    .replace(/…/g, "...");
+  let out = "";
+  for (const ch of normalized) {
+    out += ch.codePointAt(0) <= 127 ? ch : "?";
+  }
+  return out.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+}
+
+function labelPdfTextWidth(text, size, bold) {
+  // Bold uppercase text (the sticker/label font) runs noticeably wider
+  // than the 0.56 average used for regular text, so it gets its own,
+  // more conservative factor — this matters a lot more here than it
+  // used to, now that the big 4x5 format renders this same text at
+  // 28pt instead of the ~10-14pt the smaller formats use, where a
+  // small per-character underestimate used to be too tiny to notice.
+  return String(text).length * size * (bold ? 0.66 : 0.56);
+}
+
+// Wraps by actually measuring each candidate line against
+// labelPdfTextWidth (the same estimate used to size/center the text),
+// rather than an independent character-count heuristic — the two
+// previously used different width factors, which let long bold lines
+// (especially at the 4x5 format's larger font size) overflow past
+// their cell's edge instead of wrapping.
+function labelPdfWrapText(text, maxWidthPt, fontSize, bold) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (labelPdfTextWidth(candidate, fontSize, bold) > maxWidthPt && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.length ? lines : [""];
+}
+
+// Renders a QR payload to a small square JPEG and resolves with its
+// raw bytes as a "binary string" (one JS character per byte, value
+// 0-255) — exactly what atob() produces, and exactly what the PDF
+// byte-offset trick below needs: every character used while building
+// the PDF is guaranteed to be a single byte, so string length can be
+// used directly as a byte offset, image bytes included.
+function renderQrJpegBinary(payload) {
+  return new Promise((resolve, reject) => {
+    const canvas = document.createElement("canvas");
+    QRCode.toCanvas(
+      canvas,
+      payload,
+      { width: LABEL_QR_PIXELS, margin: 1, color: { dark: BRAND_BLUE, light: "#ffffff" } },
+      (err) => {
+        if (err) return reject(err);
+        try {
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+          const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+          resolve({ binary: atob(base64), width: canvas.width, height: canvas.height });
+        } catch (e) {
+          reject(e);
+        }
+      }
+    );
+  });
+}
+
+// Bottom-left-origin (PDF coordinate space) box for a slot within one
+// sheet of the given format, reading left-to-right, top-to-bottom —
+// matching how the labels are physically die-cut on the sheet.
+function labelCellBox(slot, fmt) {
+  const col = slot % fmt.cols;
+  const row = Math.floor(slot / fmt.cols);
+  const x0 = fmt.marginX + col * fmt.cellW;
+  const y1 = LABEL_PAGE_H - fmt.marginY - row * fmt.cellH;
+  const y0 = y1 - fmt.cellH;
+  return { x0, y0, x1: x0 + fmt.cellW, y1, cx: x0 + fmt.cellW / 2, cy: y0 + fmt.cellH / 2 };
+}
+
+// A filled circle, built from 4 cubic-bezier quarter-arcs (the
+// standard kappa ~= 0.5523 approximation) — raw PDF has no built-in
+// circle primitive.
+function pdfCirclePathOps(cx, cy, r, color) {
+  const k = r * 0.5523;
+  const d =
+    `${(cx + r).toFixed(2)} ${cy.toFixed(2)} m ` +
+    `${(cx + r).toFixed(2)} ${(cy + k).toFixed(2)} ${(cx + k).toFixed(2)} ${(cy + r).toFixed(2)} ${cx.toFixed(2)} ${(cy + r).toFixed(2)} c ` +
+    `${(cx - k).toFixed(2)} ${(cy + r).toFixed(2)} ${(cx - r).toFixed(2)} ${(cy + k).toFixed(2)} ${(cx - r).toFixed(2)} ${cy.toFixed(2)} c ` +
+    `${(cx - r).toFixed(2)} ${(cy - k).toFixed(2)} ${(cx - k).toFixed(2)} ${(cy - r).toFixed(2)} ${cx.toFixed(2)} ${(cy - r).toFixed(2)} c ` +
+    `${(cx + k).toFixed(2)} ${(cy - r).toFixed(2)} ${(cx + r).toFixed(2)} ${(cy - k).toFixed(2)} ${(cx + r).toFixed(2)} ${cy.toFixed(2)} c h f`;
+  return { type: "path", color, d };
+}
+
+// Splits the queued entries into pages of fmt.perSheet slots each.
+// Only the very first page is offset by startPos-1 blank slots, so
+// printing can resume partway down a sheet that's already missing a
+// few labels — every page after that fills from slot 0.
+function pdfLayoutLabelSheetPages(entries, startPos, fmt) {
+  const offset = Math.max(0, Math.min(fmt.perSheet - 1, (startPos || 1) - 1));
+  const pages = [];
+  let idx = 0;
+  let cellOffset = offset;
+  while (idx < entries.length) {
+    const pageCells = [];
+    let slot = cellOffset;
+    while (slot < fmt.perSheet && idx < entries.length) {
+      pageCells.push({ slot, entry: entries[idx] });
+      slot += 1;
+      idx += 1;
+    }
+    pages.push(pageCells);
+    cellOffset = 0;
+  }
+  return pages;
+}
+
+function pdfLabelPageOps(pageCells, qrImageRefs, fmt) {
+  const ops = [];
+  for (const { slot, entry } of pageCells) {
+    const box = labelCellBox(slot, fmt);
+    if (entry.type === "text") {
+      // The physical die-cut shape of this format wins over whatever
+      // shape the sticker was generated with — a "square" sticker
+      // background printed on a round label would just get clipped to
+      // the circle when peeled, wasting the corners rather than
+      // showing them, so round formats always fill the inscribed
+      // circle regardless of entry.shape.
+      const shape = fmt.shape === "circle" ? "circle" : entry.shape;
+      // Cells aren't always square (the 4x5 rectangle format has a
+      // taller cell than it is wide), so every measurement below is
+      // driven off the smaller of the two dimensions, and the fill
+      // itself uses the cell's actual width/height rather than
+      // assuming they match.
+      const cellW = fmt.cellW;
+      const cellH = fmt.cellH;
+      const minDim = Math.min(cellW, cellH);
+      const pad = Math.max(3, Math.round(minDim * 0.035));
+      if (shape === "circle") {
+        ops.push(pdfCirclePathOps(box.cx, box.cy, minDim / 2 - pad, PDF_BRAND_COLOR_RGB));
+      } else {
+        ops.push({
+          type: "rect",
+          x: box.x0 + pad,
+          y: box.y0 + pad,
+          w: cellW - pad * 2,
+          h: cellH - pad * 2,
+          color: PDF_BRAND_COLOR_RGB,
+        });
+      }
+      // Font size scales with the physical cell size, so text on the
+      // smaller 1.5in format doesn't overflow its label, and a bigger
+      // label (like the 4x5) gets correspondingly bigger text.
+      const fontSize = Math.max(8, Math.round(((14 * minDim) / 144) * 10) / 10);
+      const lineH = fontSize * 1.15;
+      const maxTextWidth = shape === "circle" ? minDim * 0.66 : cellW - cellW * 0.18;
+      const maxLines = Math.max(1, Math.min(6, Math.floor((cellH - pad * 4) / lineH)));
+      const lines = labelPdfWrapText(String(entry.text || "").toUpperCase(), maxTextWidth, fontSize, true).slice(
+        0,
+        maxLines
+      );
+      let ty = box.cy + ((lines.length - 1) * lineH) / 2 + fontSize * 0.32;
+      for (const line of lines) {
+        ops.push({ type: "text", x: box.cx, y: ty, text: line, font: "F2", size: fontSize, white: true, center: true });
+        ty -= lineH;
+      }
+    } else {
+      // QR codes only ever lay out on the square2 format (enforced
+      // before this is called), where the cell is always 144x144pt,
+      // so the fixed LABEL_QR_SIZE_PT footprint below is safe as-is.
+      const ref = qrImageRefs.get(entry.payload);
+      const qrTopGap = 8;
+      const qrY1 = box.y1 - qrTopGap;
+      const qrY0 = qrY1 - LABEL_QR_SIZE_PT;
+      if (ref) {
+        ops.push({
+          type: "image",
+          name: ref.resourceName,
+          x: box.cx - LABEL_QR_SIZE_PT / 2,
+          y: qrY0,
+          w: LABEL_QR_SIZE_PT,
+          h: LABEL_QR_SIZE_PT,
+        });
+      }
+      if (entry.label) {
+        const lines = labelPdfWrapText(entry.label, fmt.cellW - 10, 7.5).slice(0, 2);
+        const lineH = 9.5;
+        let ty = qrY0 - 12;
+        for (const line of lines) {
+          ops.push({ type: "text", x: box.cx, y: ty, text: line, font: "F1", size: 7.5, center: true });
+          ty -= lineH;
+        }
+      }
+    }
+  }
+  return ops;
+}
+
+function pdfLabelOpsToContentStream(ops) {
+  let body = "";
+  for (const op of ops) {
+    if (op.type !== "rect") continue;
+    const [r, g, b] = op.color;
+    body += `${r} ${g} ${b} rg\n${op.x.toFixed(2)} ${op.y.toFixed(2)} ${op.w.toFixed(2)} ${op.h.toFixed(2)} re f\n`;
+  }
+  for (const op of ops) {
+    if (op.type !== "path") continue;
+    const [r, g, b] = op.color;
+    body += `${r} ${g} ${b} rg\n${op.d}\n`;
+  }
+  for (const op of ops) {
+    if (op.type !== "image") continue;
+    body += `q ${op.w.toFixed(2)} 0 0 ${op.h.toFixed(2)} ${op.x.toFixed(2)} ${op.y.toFixed(2)} cm /${op.name} Do Q\n`;
+  }
+  body += "BT\n";
+  for (const op of ops) {
+    if (op.type !== "text") continue;
+    let x = op.x;
+    if (op.center) x = op.x - labelPdfTextWidth(op.text, op.size, op.font === "F2") / 2;
+    if (op.white) body += "1 1 1 rg\n";
+    else body += "0 g\n0 0 0 rg\n";
+    body += `/${op.font} ${op.size} Tf\n`;
+    body += `1 0 0 1 ${x.toFixed(2)} ${op.y.toFixed(2)} Tm\n`;
+    body += `(${labelPdfText(op.text)}) Tj\n`;
+  }
+  body += "ET\n";
+  return body;
+}
+
+// Assembles the final label-sheet PDF as raw bytes for a given format
+// (one of LABEL_FORMATS). Pre-renders every distinct QR payload
+// exactly once (duplicates in the queue reuse the same embedded
+// image), then lays out that format's per-sheet pages and writes the
+// whole document as one big ASCII/Latin-1-safe string, tracking byte
+// offsets via string length — valid because every character used
+// (PDF syntax, escaped text, and the raw JPEG "binary string" bytes
+// alike) is guaranteed to be a single byte.
+async function buildLabelSheetPdfBytes(entries, startPos, formatId) {
+  const fmt = LABEL_FORMATS[formatId] || LABEL_FORMATS.square2;
+  const qrPayloads = Array.from(new Set(entries.filter((e) => e.type === "qr").map((e) => e.payload)));
+  const rendered = await Promise.all(qrPayloads.map((p) => renderQrJpegBinary(p)));
+  const images = qrPayloads.map((payload, i) => ({ payload, resourceName: `Im${i}`, objNum: 5 + i, ...rendered[i] }));
+  const qrImageRefs = new Map(images.map((im) => [im.payload, im]));
+
+  const pages = pdfLayoutLabelSheetPages(entries, startPos, fmt);
+  const firstPageObjNum = 5 + images.length;
+  const pageObjNums = pages.map((_, i) => firstPageObjNum + i * 2);
+  const contentObjNums = pages.map((_, i) => firstPageObjNum + i * 2 + 1);
+
+  const objects = [
+    `1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n`,
+    `2 0 obj\n<< /Type /Pages /Kids [${pageObjNums.map((n) => `${n} 0 R`).join(" ")}] /Count ${pages.length} >>\nendobj\n`,
+    `3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n`,
+    `4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n`,
+  ];
+  for (const im of images) {
+    objects.push(
+      `${im.objNum} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${im.width} /Height ${im.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${im.binary.length} >>\nstream\n${im.binary}\nendstream\nendobj\n`
+    );
+  }
+
+  const xObjResourceDict = `<< ${images.map((im) => `/${im.resourceName} ${im.objNum} 0 R`).join(" ")} >>`;
+
+  pages.forEach((pageCells, i) => {
+    const ops = pdfLabelPageOps(pageCells, qrImageRefs, fmt);
+    const content = pdfLabelOpsToContentStream(ops);
+    objects.push(
+      `${pageObjNums[i]} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${LABEL_PAGE_W} ${LABEL_PAGE_H}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> /XObject ${xObjResourceDict} >> /Contents ${contentObjNums[i]} 0 R >>\nendobj\n`
+    );
+    objects.push(`${contentObjNums[i]} 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`);
+  });
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const obj of objects) {
+    offsets.push(pdf.length);
+    pdf += obj;
+  }
+  const xrefStart = pdf.length;
+  const totalObjs = objects.length + 1;
+  let xref = `xref\n0 ${totalObjs}\n0000000000 65535 f \n`;
+  for (let i = 1; i < totalObjs; i++) {
+    xref += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += xref;
+  pdf += `trailer\n<< /Size ${totalObjs} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+
+  const bytes = new Uint8Array(pdf.length);
+  for (let i = 0; i < pdf.length; i++) bytes[i] = pdf.charCodeAt(i) & 0xff;
+  return bytes;
 }
 
 // Each item is a collapsible section (collapsed by default) so
@@ -203,6 +594,101 @@ export function QrCodesPage({ items, updateItem }) {
     setStickers([]);
   }
 
+  // ---- "Print on Label Sheets" queue --------------------------------
+  // A separate, additive flow: items here get added from various spots
+  // around the page (a single code, a whole item's codes, the selected
+  // items, the custom QR generator, or the custom text stickers), then
+  // printed together as one PDF laid out for the 2x2in/20-per-sheet
+  // label stock. The existing "Print All/Selected/This Code" buttons
+  // are untouched — those still print loose codes on plain paper.
+  const [labelQueue, setLabelQueue] = useState([]); // [{ qkey, type: 'qr'|'text', payload?, label?, text?, shape? }]
+  const [labelStartPos, setLabelStartPos] = useState("1");
+  const [buildingLabelSheet, setBuildingLabelSheet] = useState(false);
+  const [labelFormat, setLabelFormat] = useState("square2"); // square2 | round2 | round15
+
+  // QR codes only ever print on the square 2x2 stock (a QR is itself
+  // square, so it's the one shape a round die-cut can't clip the
+  // corners off of) — so the moment any QR entry is queued, the round
+  // formats are off the table for this batch, however the toggle is
+  // set, since one "print" has to be one consistent sheet type.
+  const hasQrQueued = labelQueue.some((e) => e.type === "qr");
+  const effectiveLabelFormatId = hasQrQueued ? "square2" : labelFormat;
+  const effectiveLabelFormat = LABEL_FORMATS[effectiveLabelFormatId];
+
+  function addToLabelQueue(newEntries) {
+    if (newEntries.length === 0) return;
+    setLabelQueue((q) => [
+      ...q,
+      ...newEntries.map((e) => ({ ...e, qkey: `lq-${Date.now()}-${Math.random().toString(36).slice(2)}` })),
+    ]);
+  }
+
+  function addItemCodesToLabelQueue(item) {
+    addToLabelQueue(codesForItem(item).map((c) => ({ type: "qr", payload: c.payload, label: c.label })));
+  }
+
+  function addSelectedToLabelQueue() {
+    const its = sorted.filter((it) => selectedIds.includes(it.id));
+    const entries = [];
+    for (const it of its) entries.push(...codesForItem(it).map((c) => ({ type: "qr", payload: c.payload, label: c.label })));
+    addToLabelQueue(entries);
+  }
+
+  function addGeneratedToLabelQueue() {
+    if (!generated) return;
+    addToLabelQueue([{ type: "qr", payload: generated.text, label: generated.label }]);
+  }
+
+  function addStickersToLabelQueue() {
+    addToLabelQueue(stickers.map((s) => ({ type: "text", text: s.text, shape: s.shape })));
+  }
+
+  function removeFromLabelQueue(qkey) {
+    setLabelQueue((q) => q.filter((e) => e.qkey !== qkey));
+  }
+
+  function clearLabelQueue() {
+    setLabelQueue([]);
+  }
+
+  // Same Web-Share-API-first, blob-fallback pattern already proven out
+  // for printing orders (see handlePrintOrder in OrdersPage.jsx) —
+  // hands a real PDF file straight to the OS share sheet, which has
+  // its own native Print option, rather than relying on window.print().
+  async function handlePrintLabelSheet() {
+    if (labelQueue.length === 0 || buildingLabelSheet) return;
+    setBuildingLabelSheet(true);
+    try {
+      const startPos = Math.max(1, Math.min(effectiveLabelFormat.perSheet, parseInt(labelStartPos, 10) || 1));
+      const pdfBytes = await buildLabelSheetPdfBytes(labelQueue, startPos, effectiveLabelFormatId);
+      const fileName = `Label Sheet - ${labelQueue.length} labels.pdf`;
+
+      if (typeof navigator.canShare === "function") {
+        try {
+          const file = new File([pdfBytes], fileName, { type: "application/pdf" });
+          if (navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: fileName });
+            return;
+          }
+        } catch (err) {
+          if (err && err.name === "AbortError") return;
+        }
+      }
+
+      const blob = new Blob([pdfBytes], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, "_blank");
+      if (!win) {
+        window.alert("Your browser blocked opening the label sheet. Please allow pop-ups for this site and try again.");
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    } catch (err) {
+      window.alert("Something went wrong building the label sheet PDF. Please try again.");
+    } finally {
+      setBuildingLabelSheet(false);
+    }
+  }
+
   return (
     <div className="qr-page-root">
       <div className="qr-all-print-only">
@@ -261,9 +747,12 @@ export function QrCodesPage({ items, updateItem }) {
             <QRBox payload={generated.text} color={BRAND_BLUE} />
             <div className="qr-code-label" style={qrLabelStyle}>{generated.label}</div>
           </div>
-          <div className="no-print" style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <div className="no-print" style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
             <button style={S.addItemBtn} onClick={() => printOneCode("generated")}>
               Print This Code
+            </button>
+            <button style={addToLabelBtnStyle} onClick={addGeneratedToLabelQueue}>
+              + Add to Label Sheet
             </button>
             <button style={S.secondaryBtn} onClick={handleClearGenerated}>
               Clear
@@ -366,9 +855,12 @@ export function QrCodesPage({ items, updateItem }) {
             </div>
           )}
 
-          <div className="no-print" style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <div className="no-print" style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
             <button style={S.addItemBtn} onClick={() => printCodes(stickers.map((s) => s.key))}>
               Print All Stickers ({stickers.length})
+            </button>
+            <button style={addToLabelBtnStyle} onClick={addStickersToLabelQueue}>
+              + Add to Label Sheet
             </button>
             <button style={S.secondaryBtn} onClick={handleClearStickers}>
               Clear
@@ -440,14 +932,100 @@ export function QrCodesPage({ items, updateItem }) {
           <span>
             {selectedIds.length} item{selectedIds.length > 1 ? "s" : ""} selected
           </span>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button style={S.addItemBtn} onClick={() => printItemGroups(selectedIds)}>
               Print Selected
+            </button>
+            <button style={addToLabelBtnStyle} onClick={addSelectedToLabelQueue}>
+              + Add to Label Sheet
             </button>
             <button style={S.secondaryBtn} onClick={() => setSelected({})}>
               Clear
             </button>
           </div>
+        </div>
+      )}
+
+      {labelQueue.length > 0 && (
+        <div className="no-print" style={labelQueueBarStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+            <span style={{ fontWeight: 700, fontSize: 13, color: "#2471a3" }}>
+              {labelQueue.length} label{labelQueue.length > 1 ? "s" : ""} queued for label sheet printing
+              {labelQueue.length > effectiveLabelFormat.perSheet
+                ? ` (${Math.ceil(
+                    (labelQueue.length + (parseInt(labelStartPos, 10) || 1) - 1) / effectiveLabelFormat.perSheet
+                  )} sheets)`
+                : ""}
+            </span>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#2471a3", fontWeight: 700 }}>
+                Start at label #
+                <input
+                  type="number"
+                  min="1"
+                  max={effectiveLabelFormat.perSheet}
+                  style={{ ...countInputStyle, width: 44 }}
+                  value={labelStartPos}
+                  onFocus={(e) => e.target.select()}
+                  onChange={(e) => setLabelStartPos(e.target.value)}
+                />
+                <span style={{ fontWeight: 400 }}>of {effectiveLabelFormat.perSheet}</span>
+              </label>
+              <button style={S.addItemBtn} disabled={buildingLabelSheet} onClick={handlePrintLabelSheet}>
+                {buildingLabelSheet ? "Building…" : "Print Label Sheet"}
+              </button>
+              <button style={S.secondaryBtn} onClick={clearLabelQueue}>
+                Clear
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+            <span style={{ fontSize: 11, color: "#2471a3", fontWeight: 700 }}>Label Stock:</span>
+            {Object.values(LABEL_FORMATS).map((fmt) => {
+              const disabled = hasQrQueued && !fmt.allowQr;
+              return (
+                <button
+                  key={fmt.id}
+                  type="button"
+                  disabled={disabled}
+                  style={{
+                    ...S.catTab,
+                    ...(effectiveLabelFormatId === fmt.id ? S.catTabActive : {}),
+                    ...(disabled ? { opacity: 0.45, cursor: "not-allowed" } : {}),
+                  }}
+                  onClick={() => !disabled && setLabelFormat(fmt.id)}
+                >
+                  {fmt.label}
+                </button>
+              );
+            })}
+          </div>
+          {hasQrQueued && (
+            <p style={{ fontSize: 11, color: "#6a8bab", marginTop: 6, marginBottom: 0 }}>
+              This batch includes QR codes, so it prints on 2" square sheets — QR codes are square, so that's the
+              only shape a round label can't clip the corners off of. Remove the QR codes to use round label stock.
+            </p>
+          )}
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+            {labelQueue.map((e) => (
+              <span key={e.qkey} style={labelQueueChipStyle}>
+                {e.type === "text" ? `"${e.text}" sticker` : e.label}
+                <button type="button" style={labelQueueChipRemoveStyle} onClick={() => removeFromLabelQueue(e.qkey)}>
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+          <p style={{ fontSize: 11, color: "#6a8bab", marginTop: 8, marginBottom: 0 }}>
+            Formatted for {effectiveLabelFormat.label} sheets ({effectiveLabelFormat.cols} across,{" "}
+            {effectiveLabelFormat.rows} down) — like Premium Label Supply's adhesive sticker stock.
+            {effectiveLabelFormatId === "round15"
+              ? " This size's grid hasn't been checked against a real printed sheet yet — worth running one test page before buying a full box."
+              : ""}{" "}
+            "Print Label Sheet" opens your device's share sheet so you can print or save it.
+          </p>
         </div>
       )}
 
@@ -540,6 +1118,15 @@ export function QrCodesPage({ items, updateItem }) {
                           >
                             Print All
                           </button>
+                          <button
+                            style={addToLabelBtnStyle}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              addItemCodesToLabelQueue(item);
+                            }}
+                          >
+                            + Label Sheet
+                          </button>
                           <span style={{ color: "#bbb", fontSize: 18, cursor: "pointer" }} onClick={() => toggleItem(item.id)}>
                             {isOpen ? "⌄" : "›"}
                           </span>
@@ -554,6 +1141,13 @@ export function QrCodesPage({ items, updateItem }) {
                               <div className="qr-code-label" style={qrLabelStyle}>{entry.label}</div>
                               <button className="no-print" style={printOneBtnStyle} onClick={() => printOneCode(entry.key)}>
                                 Print This Code
+                              </button>
+                              <button
+                                className="no-print"
+                                style={{ ...addToLabelBtnStyle, width: "100%" }}
+                                onClick={() => addToLabelQueue([{ type: "qr", payload: entry.payload, label: entry.label }])}
+                              >
+                                + Add to Label Sheet
                               </button>
                             </div>
                           ))}
@@ -867,6 +1461,53 @@ const stickerTextStyle = {
   textTransform: "uppercase",
   letterSpacing: 0.5,
   wordBreak: "break-word",
+};
+
+const addToLabelBtnStyle = {
+  marginTop: 8,
+  background: "#e8f6ee",
+  color: "#1e7a46",
+  border: "none",
+  borderRadius: 6,
+  padding: "6px 10px",
+  fontSize: 11,
+  fontWeight: 700,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
+
+const labelQueueBarStyle = {
+  background: "#eaf3fc",
+  border: "1px solid #b8d9f5",
+  borderRadius: 10,
+  padding: "12px 14px",
+  marginBottom: 14,
+};
+
+const labelQueueChipStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  background: "#fff",
+  border: "1px solid #b8d9f5",
+  borderRadius: 999,
+  padding: "4px 6px 4px 10px",
+  fontSize: 11,
+  fontWeight: 600,
+  color: "#2471a3",
+};
+
+const labelQueueChipRemoveStyle = {
+  background: "#eaf3fc",
+  border: "none",
+  borderRadius: "50%",
+  width: 16,
+  height: 16,
+  lineHeight: "16px",
+  fontSize: 12,
+  color: "#2471a3",
+  cursor: "pointer",
+  padding: 0,
 };
 
 const printOneStickerBtnStyle = {
