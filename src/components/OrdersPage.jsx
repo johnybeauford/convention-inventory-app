@@ -1197,10 +1197,17 @@ const PDF_PAGE_W = 612;
 const PDF_PAGE_H = 792;
 const PDF_MARGIN_L = 50;
 const PDF_MARGIN_R = 562;
-const PDF_MARGIN_TOP = 742;
 const PDF_MARGIN_BOTTOM = 50;
 const PDF_LINE_HEIGHT = 13;
 const PDF_ROW_FONT_SIZE = 9.5;
+
+// A plain blue brand band across the top of every sheet, matching the
+// "CEPC-LUBBOCK" header bar already used on every notification email
+// (see api/notify-*.js) — so a printed order looks like it's part of
+// the same process as the emails, not a separate plain document.
+const PDF_BRAND_COLOR = [0, 0.447, 0.808]; // ~#0072CE, same blue used elsewhere in the app
+const PDF_BAND_HEIGHT = 36;
+const PDF_MARGIN_TOP = PDF_PAGE_H - PDF_BAND_HEIGHT - 50; // content starts a full margin below the band
 
 // PDF's base-14 fonts only reliably cover plain ASCII without extra
 // setup (embedding a font just for a picking sheet is overkill), so
@@ -1291,6 +1298,24 @@ function pdfLayoutPages(order) {
     let isFirstPageOfCategory = true;
     do {
       const ops = [];
+      ops.push({
+        type: "rect",
+        x: 0,
+        y: PDF_PAGE_H - PDF_BAND_HEIGHT,
+        w: PDF_PAGE_W,
+        h: PDF_BAND_HEIGHT,
+        color: PDF_BRAND_COLOR,
+      });
+      ops.push({
+        type: "text",
+        x: PDF_MARGIN_L,
+        y: PDF_PAGE_H - PDF_BAND_HEIGHT / 2 - 5,
+        text: "CEPC-LUBBOCK",
+        font: "F2",
+        size: 13,
+        white: true,
+        letterSpacing: 0.8,
+      });
       let y = PDF_MARGIN_TOP;
       // The requester's name, contact info, and notes are only useful
       // once — they go on the very first page of the whole order. Every
@@ -1351,23 +1376,35 @@ function pdfLayoutPages(order) {
 }
 
 function pdfOpsToContentStream(ops) {
-  let body = "BT\n";
+  let body = "";
+  // Filled rectangles (the brand band) are drawn first, so any text
+  // placed on top of one (like the band's own label) isn't covered.
+  for (const op of ops) {
+    if (op.type !== "rect") continue;
+    const [r, g, b] = op.color;
+    body += `${r} ${g} ${b} rg\n${op.x.toFixed(2)} ${op.y.toFixed(2)} ${op.w.toFixed(2)} ${op.h.toFixed(2)} re f\n`;
+  }
+  body += "BT\n";
   for (const op of ops) {
     if (op.type !== "text") continue;
     let x = op.x;
     if (op.rightAlignTo != null) {
       x = op.rightAlignTo - pdfTextWidth(op.text, op.size, op.bold);
     }
-    if (op.blue) {
+    if (op.white) {
+      body += "1 1 1 rg\n";
+    } else if (op.blue) {
       body += "0 0.447 0.808 rg\n";
     } else if (op.gray) {
       body += "0.4 g\n0.4 0.4 0.4 rg\n";
     } else {
       body += "0 g\n0 0 0 rg\n";
     }
+    if (op.letterSpacing) body += `${op.letterSpacing} Tc\n`;
     body += `/${op.font} ${op.size} Tf\n`;
     body += `1 0 0 1 ${x.toFixed(2)} ${op.y.toFixed(2)} Tm\n`;
     body += `(${pdfText(op.text)}) Tj\n`;
+    if (op.letterSpacing) body += "0 Tc\n";
   }
   body += "ET\n";
   for (const op of ops) {
